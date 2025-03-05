@@ -3,8 +3,8 @@ module github.com/FlorisFeddema/operatarr
 go 1.22.0
 
 require (
-	github.com/onsi/ginkgo/v2 v2.19.0
-	github.com/onsi/gomega v1.33.1
+	github.com/onsi/ginkgo/v2 v2.19.1
+	github.com/onsi/gomega v1.34.0
 	k8s.io/apimachinery v0.31.6
 	k8s.io/client-go v0.31.6
 	sigs.k8s.io/controller-runtime v0.19.0
