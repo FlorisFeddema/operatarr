@@ -1,0 +1,9 @@
+apiVersion: feddema.dev/v1alpha1
+kind: Sonarr
+metadata:
+  labels:
+    app.kubernetes.io/name: operatarr
+    app.kubernetes.io/managed-by: kustomize
+  name: sonarr-sample
+spec:
+  # TODO(user): Add fields here

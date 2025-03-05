@@ -1,0 +1,27 @@
+# permissions for end users to edit sonarrs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: operatarr
+    app.kubernetes.io/managed-by: kustomize
+  name: sonarr-editor-role
+rules:
+- apiGroups:
+  - feddema.dev
+  resources:
+  - sonarrs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - feddema.dev
+  resources:
+  - sonarrs/status
+  verbs:
+  - get
