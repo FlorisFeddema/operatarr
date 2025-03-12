@@ -18,19 +18,32 @@ package controller
 
 import (
 	"context"
-
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
+)
+
+const (
+	sonarrFinalizer = "sonarr.operatarr.feddema.dev/finalizer"
+
+	typeAvailableSonarr = "Available"
+	typeDegradedSonarr  = "Degraded"
 )
 
 // SonarrReconciler reconciles a Sonarr object
 type SonarrReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
@@ -47,9 +60,57 @@ type SonarrReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	log := log.FromContext(ctx)
+	sonarr := &feddemadevv1alpha1.Sonarr{}
 
-	// TODO(user): your logic here
+	// fetch the Sonarr instance, and if it doesn't exist, return and stop reconciliation
+	if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("sonarr instance not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+
+		log.Error(err, "failed to get sonarr")
+		return ctrl.Result{}, err
+	}
+
+	if sonarr.Status.Conditions == nil || len(sonarr.Status.Conditions) == 0 {
+		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailableSonarr, Status: metav1.ConditionUnknown, Reason: "Reconciliation", Message: "Starting reconciliation"})
+
+		if err := r.Status().Update(ctx, sonarr); err != nil {
+			log.Error(err, "unable to update Sonarr status")
+			return ctrl.Result{}, err
+		}
+
+		if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
+			log.Error(err, "failed to re-fetch sonarr")
+			return ctrl.Result{}, err
+		}
+	}
+
+	if !controllerutil.ContainsFinalizer(sonarr, sonarrFinalizer) {
+		log.Info("adding finalizer to sonarr")
+		if ok := controllerutil.AddFinalizer(sonarr, sonarrFinalizer); !ok {
+			log.Info("failed to add finalizer to sonarr")
+			return ctrl.Result{Requeue: true}, nil
+		}
+
+		if err := r.Update(ctx, sonarr); err != nil {
+			log.Error(err, "failed to update sonarr with finalizer")
+			return ctrl.Result{}, err
+		}
+		if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
+			log.Error(err, "failed to re-fetch sonarr")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// check if the object is being deleted, and if so, do nothing and stop reconciliation
+	if sonarr.GetDeletionTimestamp() != nil {
+		return ctrl.Result{}, nil
+	}
+
+	//TODO: Implement the logic to reconcile the state of the Sonarr object
 
 	return ctrl.Result{}, nil
 }
@@ -58,5 +119,6 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&feddemadevv1alpha1.Sonarr{}).
+		Owns(&appsv1.StatefulSet{}).
 		Complete(r)
 }

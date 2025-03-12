@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -25,17 +26,56 @@ import (
 
 // SonarrSpec defines the desired state of Sonarr
 type SonarrSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	PodSpec     SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
+	ServiceSpec SonarrServiceSpec     `json:"sonarrServiceSpec"`
+}
 
-	// Foo is an example field of Sonarr. Edit sonarr_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+type SonarrPodTemplateSpec struct {
+	Image            string                        `json:"image"`
+	ImagePullPolicy  string                        `json:"imagePullPolicy,omitempty"`
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// +kubebuilder:default:=0
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	NodeName string `json:"nodeName,omitempty"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Ports []corev1.ContainerPort `json:"ports,omitempty" protobuf:"bytes,6,rep,name=ports"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty" protobuf:"bytes,19,rep,name=envFrom"`
+}
+
+type SonarrServiceSpec struct {
+	corev1.ServiceSpec `json:"serviceSpec,omitempty"`
 }
 
 // SonarrStatus defines the observed state of Sonarr
 type SonarrStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// Conditions represent the latest available observations of an object's state
+	// +operator-sdk:csv:customresourcedefinitions:type=status
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 }
 
 // +kubebuilder:object:root=true
