@@ -18,11 +18,15 @@ package controller
 
 import (
 	"context"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"fmt" //nolint:goimports
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -65,7 +69,7 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// fetch the Sonarr instance, and if it doesn't exist, return and stop reconciliation
 	if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			log.Info("sonarr instance not found. Ignoring since object must be deleted")
 			return ctrl.Result{}, nil
 		}
@@ -74,7 +78,7 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	if sonarr.Status.Conditions == nil || len(sonarr.Status.Conditions) == 0 {
+	if len(sonarr.Status.Conditions) == 0 {
 		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailableSonarr, Status: metav1.ConditionUnknown, Reason: "Reconciliation", Message: "Starting reconciliation"})
 
 		if err := r.Status().Update(ctx, sonarr); err != nil {
@@ -107,10 +111,63 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// check if the object is being deleted, and if so, do nothing and stop reconciliation
 	if sonarr.GetDeletionTimestamp() != nil {
+		if controllerutil.ContainsFinalizer(sonarr, sonarrFinalizer) {
+			log.Info("performing finalization for sonarrb before deletion")
+			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegradedSonarr, Status: metav1.ConditionUnknown, Reason: "Finalizing", Message: fmt.Sprintf("Finalizing %s before deletion", sonarr.Name)})
+
+			if err := r.Status().Update(ctx, sonarr); err != nil {
+				log.Error(err, "failed to update sonarr status")
+				return ctrl.Result{}, err
+			}
+
+			// TODO: perform finalization
+
+			if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
+				log.Error(err, "failed to re-fetch sonarr")
+				return ctrl.Result{}, err
+			}
+
+			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegradedSonarr, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: fmt.Sprintf("Finalized %s before deletion", sonarr.Name)})
+
+			if err := r.Status().Update(ctx, sonarr); err != nil {
+				log.Error(err, "failed to update sonarr status")
+				return ctrl.Result{}, err
+			}
+
+			log.Info("removing finalizer from sonarr")
+			if ok := controllerutil.RemoveFinalizer(sonarr, sonarrFinalizer); !ok {
+				log.Info("failed to remove finalizer from sonarr")
+				return ctrl.Result{}, nil
+			}
+
+			if err := r.Update(ctx, sonarr); err != nil {
+				log.Error(err, "failed to remove finalizer from sonarr")
+				return ctrl.Result{}, err
+			}
+
+		}
 		return ctrl.Result{}, nil
 	}
 
-	//TODO: Implement the logic to reconcile the state of the Sonarr object
+	found := &appsv1.StatefulSet{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: sonarr.Namespace, Name: sonarr.Name}, found)
+	if err != nil && apierrors.IsNotFound(err) {
+		ss, err := r.statefulSetForSonarr(sonarr)
+		if err != nil {
+			log.Error(err, "failed to generate StatefulSet for sonarr")
+			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailableSonarr, Status: metav1.ConditionFalse, Reason: "Reconciliation", Message: "Failed to create StatefulSet"})
+		}
+
+		log.Info("creating a new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
+		if err := r.Create(ctx, ss); err != nil {
+			log.Error(err, "failed to create new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
+			return ctrl.Result{}, err
+		}
+
+		// StatefulSet created successfully - continue with the reconciliation
+	}
+
+	// TODO: create the other resources for the Sonarr object
 
 	return ctrl.Result{}, nil
 }
@@ -120,5 +177,128 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&feddemadevv1alpha1.Sonarr{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&corev1.Service{}).
 		Complete(r)
+}
+
+func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonarr) (*appsv1.StatefulSet, error) {
+	labels := labelsForSonarr(sonarr.Name)
+
+	statefulset := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sonarr.Name,
+			Namespace: sonarr.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:             ptr.To(int32(1)),
+			RevisionHistoryLimit: ptr.To(int32(1)),
+
+			ServiceName: sonarr.Name,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Affinity:         sonarr.Spec.PodSpec.Affinity,
+					NodeSelector:     sonarr.Spec.PodSpec.NodeSelector,
+					Tolerations:      sonarr.Spec.PodSpec.Tolerations,
+					NodeName:         sonarr.Spec.PodSpec.NodeName,
+					SecurityContext:  sonarr.Spec.PodSpec.SecurityContext,
+					ImagePullSecrets: sonarr.Spec.PodSpec.ImagePullSecrets,
+					Containers: []corev1.Container{
+						{
+							Name:            "sonarr",
+							Image:           sonarr.Spec.PodSpec.Image,
+							ImagePullPolicy: sonarr.Spec.PodSpec.ImagePullPolicy,
+							Ports: []corev1.ContainerPort{{
+								ContainerPort: 8989,
+								Name:          "http",
+								Protocol:      corev1.ProtocolTCP,
+							}},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/ping",
+										Port: intstr.FromString("http")},
+								},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/ping",
+										Port: intstr.FromString("http"),
+									},
+								},
+							},
+							Resources:       sonarr.Spec.PodSpec.Resources,
+							SecurityContext: sonarr.Spec.PodSpec.ContainerSecurityContext,
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "config",
+									MountPath: "/config",
+								},
+								//TODO: Add media volume
+							},
+						},
+					},
+					//TODO: Volumes
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "config",
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes:      sonarr.Spec.PodSpec.ConfigVolumeSpec.AccessModes,
+						Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: sonarr.Spec.PodSpec.ConfigVolumeSpec.Size}},
+						StorageClassName: sonarr.Spec.PodSpec.ConfigVolumeSpec.StorageClassName,
+					},
+				},
+			},
+		},
+	}
+
+	if err := ctrl.SetControllerReference(sonarr, statefulset, r.Scheme); err != nil {
+		return nil, err
+	}
+	return statefulset, nil
+}
+
+func (r *SonarrReconciler) serviceForSonarr(sonarr *feddemadevv1alpha1.Sonarr) (*corev1.Service, error) {
+	labels := labelsForSonarr(sonarr.Name)
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sonarr.Name,
+			Namespace: sonarr.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{
+				Name:       "http",
+				Port:       8989,
+				TargetPort: intstr.FromInt32(8989),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+			Selector: labels,
+			Type:     corev1.ServiceTypeClusterIP,
+		},
+	}
+
+	if err := ctrl.SetControllerReference(sonarr, service, r.Scheme); err != nil {
+		return nil, err
+	}
+	return service, nil
+}
+
+func labelsForSonarr(name string) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       name,
+		"app.kubernetes.io/managed-by": "operatarr",
+	}
 }

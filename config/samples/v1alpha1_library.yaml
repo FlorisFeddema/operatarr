@@ -1,0 +1,9 @@
+apiVersion: feddema.dev/v1alpha1
+kind: Library
+metadata:
+  labels:
+    app.kubernetes.io/name: operatarr
+    app.kubernetes.io/managed-by: kustomize
+  name: library-sample
+spec:
+  # TODO(user): Add fields here

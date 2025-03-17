@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -26,46 +27,31 @@ import (
 
 // SonarrSpec defines the desired state of Sonarr
 type SonarrSpec struct {
-	PodSpec     SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
-	ServiceSpec SonarrServiceSpec     `json:"sonarrServiceSpec"`
+	PodSpec SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
+}
+
+type ConfigVolumeSpec struct {
+	AccessModes      []corev1.PersistentVolumeAccessMode `json:"accessModes"`
+	Size             resource.Quantity                   `json:"resources"`
+	StorageClassName *string                             `json:"StorageClassName,omitempty"`
 }
 
 type SonarrPodTemplateSpec struct {
 	Image            string                        `json:"image"`
-	ImagePullPolicy  string                        `json:"imagePullPolicy,omitempty"`
+	ImagePullPolicy  corev1.PullPolicy             `json:"imagePullPolicy,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
-	// +kubebuilder:default:=0
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
+	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
+	NodeName     string              `json:"nodeName,omitempty"`
+	Affinity     *corev1.Affinity    `json:"affinity,omitempty"`
+	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
 
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
-
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	NodeName string `json:"nodeName,omitempty"`
-
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	Affinity *corev1.Affinity `json:"affinity,omitempty"`
-
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
-
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	Ports []corev1.ContainerPort `json:"ports,omitempty" protobuf:"bytes,6,rep,name=ports"`
-
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	Env []corev1.EnvVar `json:"env,omitempty"`
+	SecurityContext          *corev1.PodSecurityContext `json:"securityContext"`
+	ContainerSecurityContext *corev1.SecurityContext    `json:"ContainerSecurityContext"`
 
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty" protobuf:"bytes,19,rep,name=envFrom"`
-}
-
-type SonarrServiceSpec struct {
-	corev1.ServiceSpec `json:"serviceSpec,omitempty"`
+	ConfigVolumeSpec *ConfigVolumeSpec `json:"configVolumeSpec"`
 }
 
 // SonarrStatus defines the observed state of Sonarr

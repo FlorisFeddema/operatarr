@@ -1,35 +1,23 @@
----
+# permissions for end users to view libraries.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  labels:
+    app.kubernetes.io/name: operatarr
+    app.kubernetes.io/managed-by: kustomize
+  name: library-viewer-role
 rules:
 - apiGroups:
   - feddema.dev
   resources:
   - libraries
-  - sonarrs
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries/finalizers
-  - sonarrs/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - feddema.dev
-  resources:
   - libraries/status
-  - sonarrs/status
   verbs:
   - get
-  - patch
-  - update
