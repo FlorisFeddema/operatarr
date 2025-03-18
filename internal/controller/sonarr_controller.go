@@ -30,7 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	lg "sigs.k8s.io/controller-runtime/pkg/log"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -64,7 +64,7 @@ type SonarrReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	log := lg.FromContext(ctx)
 	sonarr := &feddemadevv1alpha1.Sonarr{}
 
 	// fetch the Sonarr instance, and if it doesn't exist, return and stop reconciliation
