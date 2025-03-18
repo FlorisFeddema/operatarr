@@ -159,7 +159,7 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 
 		log.Info("creating a new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
-		if err := r.Create(ctx, ss); err != nil {
+		if err = r.Create(ctx, ss); err != nil {
 			log.Error(err, "failed to create new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
 			return ctrl.Result{}, err
 		}
