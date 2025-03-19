@@ -152,11 +152,11 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Sonarr")
 		os.Exit(1)
 	}
-	if err = (&controller.LibraryReconciler{
+	if err = (&controller.MediaLibraryReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Library")
+		setupLog.Error(err, "unable to create controller", "controller", "MediaLibrary")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

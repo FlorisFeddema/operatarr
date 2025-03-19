@@ -1,9 +1,9 @@
 apiVersion: feddema.dev/v1alpha1
-kind: Library
+kind: MediaLibrary
 metadata:
   labels:
     app.kubernetes.io/name: operatarr
     app.kubernetes.io/managed-by: kustomize
-  name: library-sample
+  name: medialibrary-sample
 spec:
   # TODO(user): Add fields here

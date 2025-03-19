@@ -2,6 +2,6 @@
 resources:
 - v1alpha1_sonarr.yaml
 - _v1alpha1_sonarr.yaml
-- v1alpha1_library.yaml
-- _v1alpha1_library.yaml
+- v1alpha1_medialibrary.yaml
+- _v1alpha1_medialibrary.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

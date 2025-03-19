@@ -1,16 +1,16 @@
-# permissions for end users to edit libraries.
+# permissions for end users to edit medialibraries.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/name: operatarr
     app.kubernetes.io/managed-by: kustomize
-  name: library-editor-role
+  name: medialibrary-editor-role
 rules:
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries
+  - medialibraries
   verbs:
   - create
   - delete
@@ -22,6 +22,6 @@ rules:
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries/status
+  - medialibraries/status
   verbs:
   - get

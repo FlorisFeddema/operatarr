@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.1
-  name: libraries.feddema.dev
+  name: medialibraries.feddema.dev
 spec:
   group: feddema.dev
   names:
-    kind: Library
-    listKind: LibraryList
-    plural: libraries
-    singular: library
+    kind: MediaLibrary
+    listKind: MediaLibraryList
+    plural: medialibraries
+    singular: medialibrary
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Library is the Schema for the libraries API
+        description: MediaLibrary is the Schema for the medialibraries API
         properties:
           apiVersion:
             description: |-
@@ -37,15 +37,26 @@ spec:
           metadata:
             type: object
           spec:
-            description: LibrarySpec defines the desired state of Library
+            description: MediaLibrarySpec defines the desired state of MediaLibrary
             properties:
-              foo:
-                description: Foo is an example field of Library. Edit library_types.go
-                  to remove/update
+              StorageClassName:
                 type: string
+              accessModes:
+                items:
+                  type: string
+                type: array
+              size:
+                anyOf:
+                - type: integer
+                - type: string
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+            required:
+            - accessModes
+            - size
             type: object
           status:
-            description: LibraryStatus defines the observed state of Library
+            description: MediaLibraryStatus defines the observed state of MediaLibrary
             type: object
         type: object
     served: true

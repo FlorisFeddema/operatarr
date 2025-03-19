@@ -1,16 +1,16 @@
-# permissions for end users to view libraries.
+# permissions for end users to view medialibraries.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/name: operatarr
     app.kubernetes.io/managed-by: kustomize
-  name: library-viewer-role
+  name: medialibrary-viewer-role
 rules:
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries
+  - medialibraries
   verbs:
   - get
   - list
@@ -18,6 +18,6 @@ rules:
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries/status
+  - medialibraries/status
   verbs:
   - get

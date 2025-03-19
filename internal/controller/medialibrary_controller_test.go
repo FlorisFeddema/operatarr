@@ -30,7 +30,7 @@ import (
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 )
 
-var _ = Describe("Library Controller", func() {
+var _ = Describe("MediaLibrary Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 
@@ -40,13 +40,13 @@ var _ = Describe("Library Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		library := &feddemadevv1alpha1.Library{}
+		medialibrary := &feddemadevv1alpha1.MediaLibrary{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind Library")
-			err := k8sClient.Get(ctx, typeNamespacedName, library)
+			By("creating the custom resource for the Kind MediaLibrary")
+			err := k8sClient.Get(ctx, typeNamespacedName, medialibrary)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &feddemadevv1alpha1.Library{
+				resource := &feddemadevv1alpha1.MediaLibrary{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,16 +59,16 @@ var _ = Describe("Library Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &feddemadevv1alpha1.Library{}
+			resource := &feddemadevv1alpha1.MediaLibrary{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance Library")
+			By("Cleanup the specific resource instance MediaLibrary")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &LibraryReconciler{
+			controllerReconciler := &MediaLibraryReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

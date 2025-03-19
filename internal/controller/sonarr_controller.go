@@ -112,7 +112,7 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// check if the object is being deleted, and if so, do nothing and stop reconciliation
 	if sonarr.GetDeletionTimestamp() != nil {
 		if controllerutil.ContainsFinalizer(sonarr, sonarrFinalizer) {
-			log.Info("performing finalization for sonarrb before deletion")
+			log.Info("performing finalization for sonarr before deletion")
 			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegradedSonarr, Status: metav1.ConditionUnknown, Reason: "Finalizing", Message: fmt.Sprintf("Finalizing %s before deletion", sonarr.Name)})
 
 			if err := r.Status().Update(ctx, sonarr); err != nil {

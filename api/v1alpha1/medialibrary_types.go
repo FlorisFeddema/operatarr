@@ -25,40 +25,43 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// LibrarySpec defines the desired state of Library
-type LibrarySpec struct {
+// MediaLibrarySpec defines the desired state of MediaLibrary
+type MediaLibrarySpec struct {
 	AccessModes      []corev1.PersistentVolumeAccessMode `json:"accessModes"`
 	Size             resource.Quantity                   `json:"size"`
-	StorageClassName *string                             `json:"StorageClassName"`
+	StorageClassName *string                             `json:"StorageClassName,omitempty"`
 }
 
-// LibraryStatus defines the observed state of Library
-type LibraryStatus struct {
+// MediaLibraryStatus defines the observed state of MediaLibrary
+type MediaLibraryStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// +operator-sdk:csv:customresourcedefinitions:type=status
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// Library is the Schema for the libraries API
-type Library struct {
+// MediaLibrary is the Schema for the medialibraries API
+type MediaLibrary struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   LibrarySpec   `json:"spec,omitempty"`
-	Status LibraryStatus `json:"status,omitempty"`
+	Spec   MediaLibrarySpec   `json:"spec,omitempty"`
+	Status MediaLibraryStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// LibraryList contains a list of Library
-type LibraryList struct {
+// MediaLibraryList contains a list of MediaLibrary
+type MediaLibraryList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Library `json:"items"`
+	Items           []MediaLibrary `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&Library{}, &LibraryList{})
+	SchemeBuilder.Register(&MediaLibrary{}, &MediaLibraryList{})
 }

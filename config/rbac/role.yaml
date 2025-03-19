@@ -7,7 +7,7 @@ rules:
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries
+  - medialibraries
   - sonarrs
   verbs:
   - create
@@ -20,14 +20,14 @@ rules:
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries/finalizers
+  - medialibraries/finalizers
   - sonarrs/finalizers
   verbs:
   - update
 - apiGroups:
   - feddema.dev
   resources:
-  - libraries/status
+  - medialibraries/status
   - sonarrs/status
   verbs:
   - get
