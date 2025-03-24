@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -135,17 +136,10 @@ func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	found := &corev1.PersistentVolumeClaim{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: mediaLibrary.Namespace, Name: mediaLibrary.Name}, found)
-	if err != nil && apierrors.IsNotFound(err) {
-		pvc, err := r.pvcForMediaLibrary(mediaLibrary)
-		if err != nil {
-			log.Error(err, "unable to generate pvc for mediaLibrary")
-			return ctrl.Result{}, err
-		}
+	err := r.createOrUpdatePvc(ctx, log, mediaLibrary)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-
-	// TODO(user): your logic here
 
 	return ctrl.Result{}, nil
 }
@@ -158,21 +152,52 @@ func (r *MediaLibraryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *MediaLibraryReconciler) pvcForMediaLibrary(library *feddemadevv1alpha1.MediaLibrary) (*corev1.PersistentVolumeClaim, error) {
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      library.Name,
-			Namespace: library.Namespace,
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes:      library.Spec.AccessModes,
-			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: library.Spec.Size}},
-			StorageClassName: library.Spec.StorageClassName,
-		},
+func (r *MediaLibraryReconciler) createOrUpdatePvc(ctx context.Context, log logr.Logger, library *feddemadevv1alpha1.MediaLibrary) error {
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: library.Namespace, Name: library.Name}, pvc)
+	if err != nil && apierrors.IsNotFound(err) {
+		// create pvc
+		pvc = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      library.Name,
+				Namespace: library.Namespace,
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes:      library.Spec.AccessModes,
+				Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: library.Spec.Size}},
+				StorageClassName: library.Spec.StorageClassName,
+			},
+		}
+		if err := ctrl.SetControllerReference(library, pvc, r.Scheme); err != nil {
+			log.Error(err, "unable to set owner reference on PVC")
+			meta.SetStatusCondition(&library.Status.Conditions, metav1.Condition{Type: typeAvailableMediaLibrary, Status: metav1.ConditionFalse, Message: "Unable to generate pvc for mediaLibrary"})
+			return err
+		}
+
+		log.Info("creating pvc for media library")
+		if err := r.Create(ctx, pvc); err != nil {
+			log.Error(err, "unable to create pvc for media library")
+			return err
+		}
+		log.Info("created pvc for media library")
+		return nil
 	}
 
-	if err := ctrl.SetControllerReference(library, pvc, r.Scheme); err != nil {
-		return nil, err
+	// update pvc
+	if library.Spec.Size.Cmp(pvc.Spec.Resources.Requests[corev1.ResourceStorage]) != 0 {
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = library.Spec.Size
 	}
-	return pvc, nil
+
+	if library.Spec.StorageClassName != pvc.Spec.StorageClassName {
+		meta.SetStatusCondition(&library.Status.Conditions, metav1.Condition{Type: typeAvailableMediaLibrary, Status: metav1.ConditionFalse, Message: "Storage class name cannot be updated"})
+		log.Info("storage class name cannot be updated")
+	}
+
+	if err := r.Update(ctx, pvc); err != nil {
+		log.Error(err, "unable to update pvc for media library")
+		return err
+	}
+	log.Info("updated pvc for media library")
+	return nil
+
 }

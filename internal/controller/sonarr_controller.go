@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt" //nolint:goimports
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -149,22 +150,8 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	found := &appsv1.StatefulSet{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: sonarr.Namespace, Name: sonarr.Name}, found)
-	if err != nil && apierrors.IsNotFound(err) {
-		ss, err := r.statefulSetForSonarr(sonarr)
-		if err != nil {
-			log.Error(err, "failed to generate StatefulSet for sonarr")
-			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailableSonarr, Status: metav1.ConditionFalse, Reason: "Reconciliation", Message: "Failed to create StatefulSet"})
-		}
-
-		log.Info("creating a new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
-		if err = r.Create(ctx, ss); err != nil {
-			log.Error(err, "failed to create new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
-			return ctrl.Result{}, err
-		}
-
-		// StatefulSet created successfully - continue with the reconciliation
+	if err := r.createOrUpdateObjects(ctx, log, sonarr); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// TODO: create the other resources for the Sonarr object
@@ -179,6 +166,29 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Complete(r)
+}
+
+func (r *SonarrReconciler) createOrUpdateObjects(ctx context.Context, log logr.Logger, sonarr *feddemadevv1alpha1.Sonarr) error {
+	//TODO: Create this function
+	found := &appsv1.StatefulSet{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: sonarr.Namespace, Name: sonarr.Name}, found)
+	if err != nil && apierrors.IsNotFound(err) {
+		ss, err := r.statefulSetForSonarr(sonarr)
+		if err != nil {
+			log.Error(err, "failed to generate StatefulSet for sonarr")
+			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailableSonarr, Status: metav1.ConditionFalse, Reason: "Reconciliation", Message: "Failed to generate StatefulSet"})
+			return err
+		}
+
+		log.Info("creating a new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
+		if err = r.Create(ctx, ss); err != nil {
+			log.Error(err, "failed to create new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
+			return err
+		}
+
+		// StatefulSet created successfully - continue with the reconciliation
+	}
+	return nil
 }
 
 func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonarr) (*appsv1.StatefulSet, error) {
