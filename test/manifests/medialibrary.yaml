@@ -1,0 +1,10 @@
+kind: MediaLibrary
+apiVersion: feddema.dev/v1alpha1
+metadata:
+  name: medialibrary
+spec:
+  storageClassName: immediate
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+

@@ -19,16 +19,17 @@ package controller
 import (
 	"context"
 	"fmt"
+	controllerruntime "github.com/FlorisFeddema/operatarr/internal/controller/controller-runtime"
 	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	lg "sigs.k8s.io/controller-runtime/pkg/log"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
@@ -67,81 +68,97 @@ func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, mediaLibrary); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("mediaLibrary resource not found. Ignoring since object must be deleted")
-			return ctrl.Result{}, nil
+			return controllerruntime.Success()
 		}
 		log.Error(err, "unable to fetch mediaLibrary")
-		return ctrl.Result{}, err
+		return controllerruntime.Fail(err)
 	}
 
 	if len(mediaLibrary.Status.Conditions) == 0 {
-		meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeAvailableMediaLibrary, Status: metav1.ConditionUnknown, Message: "Starting reconciliation"})
+		meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeAvailableMediaLibrary, Status: metav1.ConditionUnknown, Message: "Starting reconciliation", Reason: "Reconciliation"})
 
 		if err := r.Status().Update(ctx, mediaLibrary); err != nil {
 			log.Error(err, "unable to update mediaLibrary status")
-			return ctrl.Result{}, err
+			return controllerruntime.Fail(err)
 		}
-
-		if err := r.Get(ctx, req.NamespacedName, mediaLibrary); err != nil {
-			log.Error(err, "unable to re-fetch mediaLibrary")
-			return ctrl.Result{}, err
-		}
+		return controllerruntime.Success()
 	}
 
-	if !controllerutil.ContainsFinalizer(mediaLibrary, sonarrFinalizer) {
+	if !controllerutil.ContainsFinalizer(mediaLibrary, mediaLibraryFinalizer) {
 		log.Info("adding finalizer to the mediaLibrary")
-		if ok := controllerutil.AddFinalizer(mediaLibrary, sonarrFinalizer); !ok {
+		if ok := controllerutil.AddFinalizer(mediaLibrary, mediaLibraryFinalizer); !ok {
 			log.Info("unable to add finalizer to the mediaLibrary")
-			return ctrl.Result{Requeue: true}, nil
+			return controllerruntime.Fail(errors.New("unable to add finalizer to the mediaLibrary"))
 		}
-
 		if err := r.Update(ctx, mediaLibrary); err != nil {
 			log.Error(err, "unable to update mediaLibrary with finalizer")
-			return ctrl.Result{}, err
+			return controllerruntime.Fail(err)
 		}
-		if err := r.Get(ctx, req.NamespacedName, mediaLibrary); err != nil {
-			log.Error(err, "unable to re-fetch mediaLibrary")
-			return ctrl.Result{}, err
-		}
+		return controllerruntime.Success()
 	}
 
 	if mediaLibrary.DeletionTimestamp != nil {
-		if controllerutil.ContainsFinalizer(mediaLibrary, sonarrFinalizer) {
+		if controllerutil.ContainsFinalizer(mediaLibrary, mediaLibraryFinalizer) {
 			log.Info("performing finalization for the mediaLibrary before deletion")
-			meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeDegradedMediaLibrary, Status: metav1.ConditionUnknown, Message: fmt.Sprintf("Finalizing %s before deletion", mediaLibrary.Name)})
+			meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeDegradedMediaLibrary, Status: metav1.ConditionUnknown, Message: fmt.Sprintf("Finalizing %s before deletion", mediaLibrary.Name), Reason: "Finalization"})
 
 			if err := r.Status().Update(ctx, mediaLibrary); err != nil {
 				log.Error(err, "unable to update mediaLibrary status")
-				return ctrl.Result{}, err
+				return controllerruntime.Fail(err)
 			}
 
 			// TODO: perform finalization here
 
 			if err := r.Get(ctx, req.NamespacedName, mediaLibrary); err != nil {
 				log.Error(err, "unable to re-fetch mediaLibrary")
-				return ctrl.Result{}, err
+				return controllerruntime.Fail(err)
 			}
 
-			meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeDegradedMediaLibrary, Status: metav1.ConditionTrue, Message: fmt.Sprintf("Finalization of %s completed", mediaLibrary.Name)})
+			meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeDegradedMediaLibrary, Status: metav1.ConditionTrue, Message: fmt.Sprintf("Finalization of %s completed", mediaLibrary.Name), Reason: "Finalization"})
+			if err := r.Status().Update(ctx, mediaLibrary); err != nil {
+				log.Error(err, "unable to update mediaLibrary status")
+				return controllerruntime.Fail(err)
+			}
 
 			log.Info("removing finalizer from the mediaLibrary")
-			if ok := controllerutil.RemoveFinalizer(mediaLibrary, sonarrFinalizer); !ok {
+			if ok := controllerutil.RemoveFinalizer(mediaLibrary, mediaLibraryFinalizer); !ok {
 				log.Info("unable to remove finalizer from the mediaLibrary")
-				return ctrl.Result{}, nil
+				return controllerruntime.Success()
 			}
 
 			if err := r.Update(ctx, mediaLibrary); err != nil {
 				log.Error(err, "unable to remove finalizer from mediaLibrary")
-				return ctrl.Result{}, err
+				return controllerruntime.Fail(err)
 			}
 		}
+		return controllerruntime.Success()
 	}
 
-	err := r.createOrUpdatePvc(ctx, log, mediaLibrary)
+	err := r.ensurePvc(ctx, log, mediaLibrary)
 	if err != nil {
-		return ctrl.Result{}, err
+		meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeDegradedMediaLibrary, Status: metav1.ConditionTrue, Message: "pvc creation failed", Reason: "PvcCreationFailed"})
+		if err := r.Status().Update(ctx, mediaLibrary); err != nil {
+			log.Error(err, "unable to update mediaLibrary status")
+			return controllerruntime.Fail(err)
+		}
+		return controllerruntime.Fail(err)
 	}
 
-	return ctrl.Result{}, nil
+	if err := r.Get(ctx, req.NamespacedName, mediaLibrary); err != nil {
+		log.Error(err, "unable to re-fetch mediaLibrary")
+		return controllerruntime.Fail(err)
+	}
+
+	meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeAvailableMediaLibrary, Status: metav1.ConditionTrue, Message: "Ready", Reason: "Ready"})
+	meta.SetStatusCondition(&mediaLibrary.Status.Conditions, metav1.Condition{Type: typeDegradedMediaLibrary, Status: metav1.ConditionFalse, Message: "Healthy", Reason: "Healthy"})
+	if err := r.Status().Update(ctx, mediaLibrary); err != nil {
+		log.Error(err, "unable to update mediaLibrary status")
+		return controllerruntime.Fail(err)
+	}
+
+	log.Info("media library is ready")
+
+	return controllerruntime.Success()
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -152,52 +169,32 @@ func (r *MediaLibraryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *MediaLibraryReconciler) createOrUpdatePvc(ctx context.Context, log logr.Logger, library *feddemadevv1alpha1.MediaLibrary) error {
-	pvc := &corev1.PersistentVolumeClaim{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: library.Namespace, Name: library.Name}, pvc)
-	if err != nil && apierrors.IsNotFound(err) {
-		// create pvc
-		pvc = &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      library.Name,
-				Namespace: library.Namespace,
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes:      library.Spec.AccessModes,
-				Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: library.Spec.Size}},
-				StorageClassName: library.Spec.StorageClassName,
-			},
-		}
-		if err := ctrl.SetControllerReference(library, pvc, r.Scheme); err != nil {
-			log.Error(err, "unable to set owner reference on PVC")
-			meta.SetStatusCondition(&library.Status.Conditions, metav1.Condition{Type: typeAvailableMediaLibrary, Status: metav1.ConditionFalse, Message: "Unable to generate pvc for mediaLibrary"})
-			return err
-		}
-
-		log.Info("creating pvc for media library")
-		if err := r.Create(ctx, pvc); err != nil {
-			log.Error(err, "unable to create pvc for media library")
-			return err
-		}
-		log.Info("created pvc for media library")
-		return nil
+func (r *MediaLibraryReconciler) ensurePvc(ctx context.Context, log logr.Logger, library *feddemadevv1alpha1.MediaLibrary) error {
+	desired := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        library.Name,
+			Namespace:   library.Namespace,
+			Annotations: library.Spec.Annotations,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes:      library.Spec.AccessModes,
+			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: library.Spec.Size}},
+			StorageClassName: library.Spec.StorageClassName,
+		},
 	}
 
-	// update pvc
-	if library.Spec.Size.Cmp(pvc.Spec.Resources.Requests[corev1.ResourceStorage]) != 0 {
+	if err := ctrl.SetControllerReference(library, desired, r.Scheme); err != nil {
+		return errors.WithMessage(err, "unable to set owner reference on PVC")
+	}
+
+	pvc := desired.DeepCopy()
+	statusType, err := controllerutil.CreateOrPatch(ctx, r.Client, pvc, func() error {
 		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = library.Spec.Size
+		setMergedLabelsAndAnnotations(pvc, desired)
+		return nil
+	})
+	if err != nil {
+		return errors.WithMessage(err, fmt.Sprintf("unable to create or patch PVC with status %s", statusType))
 	}
-
-	if library.Spec.StorageClassName != pvc.Spec.StorageClassName {
-		meta.SetStatusCondition(&library.Status.Conditions, metav1.Condition{Type: typeAvailableMediaLibrary, Status: metav1.ConditionFalse, Message: "Storage class name cannot be updated"})
-		log.Info("storage class name cannot be updated")
-	}
-
-	if err := r.Update(ctx, pvc); err != nil {
-		log.Error(err, "unable to update pvc for media library")
-		return err
-	}
-	log.Info("updated pvc for media library")
 	return nil
-
 }

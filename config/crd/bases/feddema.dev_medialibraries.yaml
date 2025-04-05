@@ -39,8 +39,6 @@ spec:
           spec:
             description: MediaLibrarySpec defines the desired state of MediaLibrary
             properties:
-              StorageClassName:
-                type: string
               accessModes:
                 items:
                   type: string
@@ -51,6 +49,8 @@ spec:
                 - type: string
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
+              storageClassName:
+                type: string
             required:
             - accessModes
             - size

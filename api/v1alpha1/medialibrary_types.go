@@ -29,7 +29,8 @@ import (
 type MediaLibrarySpec struct {
 	AccessModes      []corev1.PersistentVolumeAccessMode `json:"accessModes"`
 	Size             resource.Quantity                   `json:"size"`
-	StorageClassName *string                             `json:"StorageClassName,omitempty"`
+	StorageClassName *string                             `json:"storageClassName,omitempty"`
+	Annotations      map[string]string                   `json:"annotations,omitempty"`
 }
 
 // MediaLibraryStatus defines the observed state of MediaLibrary
