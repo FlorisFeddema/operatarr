@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt" //nolint:goimports
+	controllerruntime "github.com/FlorisFeddema/operatarr/internal/controller/controller-runtime"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,18 +38,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 )
 
-const (
-	sonarrFinalizer = "sonarr.operatarr.feddema.dev/finalizer"
-
-	typeAvailableSonarr = "Available"
-	typeDegradedSonarr  = "Degraded"
-)
-
 // SonarrReconciler reconciles a Sonarr object
 type SonarrReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
@@ -68,86 +61,74 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	log := lg.FromContext(ctx)
 	sonarr := &feddemadevv1alpha1.Sonarr{}
 
-	// fetch the Sonarr instance, and if it doesn't exist, return and stop reconciliation
 	if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("sonarr instance not found. Ignoring since object must be deleted")
-			return ctrl.Result{}, nil
+			return controllerruntime.Success()
 		}
 
-		log.Error(err, "failed to get sonarr")
-		return ctrl.Result{}, err
+		log.Error(err, "unable to fetch sonarr")
+		return controllerruntime.Fail(err)
 	}
 
 	if len(sonarr.Status.Conditions) == 0 {
-		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailableSonarr, Status: metav1.ConditionUnknown, Reason: "Reconciliation", Message: "Starting reconciliation"})
+		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionUnknown, Reason: "Reconciliation", Message: "Starting reconciliation"})
 
 		if err := r.Status().Update(ctx, sonarr); err != nil {
 			log.Error(err, "unable to update Sonarr status")
-			return ctrl.Result{}, err
+			return controllerruntime.Fail(err)
 		}
-
-		if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
-			log.Error(err, "failed to re-fetch sonarr")
-			return ctrl.Result{}, err
-		}
+		return controllerruntime.Success()
 	}
 
-	if !controllerutil.ContainsFinalizer(sonarr, sonarrFinalizer) {
+	if !controllerutil.ContainsFinalizer(sonarr, finalizerName) {
 		log.Info("adding finalizer to sonarr")
-		if ok := controllerutil.AddFinalizer(sonarr, sonarrFinalizer); !ok {
-			log.Info("failed to add finalizer to sonarr")
-			return ctrl.Result{Requeue: true}, nil
+		if ok := controllerutil.AddFinalizer(sonarr, finalizerName); !ok {
+			return controllerruntime.Fail(errors.New("unable to add finalizer to sonarr"))
 		}
-
 		if err := r.Update(ctx, sonarr); err != nil {
 			log.Error(err, "failed to update sonarr with finalizer")
-			return ctrl.Result{}, err
+			return controllerruntime.Fail(err)
 		}
-		if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
-			log.Error(err, "failed to re-fetch sonarr")
-			return ctrl.Result{}, err
-		}
+		return controllerruntime.Success()
 	}
 
-	// check if the object is being deleted, and if so, do nothing and stop reconciliation
 	if sonarr.GetDeletionTimestamp() != nil {
-		if controllerutil.ContainsFinalizer(sonarr, sonarrFinalizer) {
+		if controllerutil.ContainsFinalizer(sonarr, finalizerName) {
 			log.Info("performing finalization for sonarr before deletion")
-			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegradedSonarr, Status: metav1.ConditionUnknown, Reason: "Finalizing", Message: fmt.Sprintf("Finalizing %s before deletion", sonarr.Name)})
+			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionUnknown, Reason: "Finalizing", Message: fmt.Sprintf("Finalizing %s before deletion", sonarr.Name)})
 
 			if err := r.Status().Update(ctx, sonarr); err != nil {
 				log.Error(err, "failed to update sonarr status")
-				return ctrl.Result{}, err
+				return controllerruntime.Fail(err)
 			}
 
 			// TODO: perform finalization
 
 			if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
 				log.Error(err, "failed to re-fetch sonarr")
-				return ctrl.Result{}, err
+				return controllerruntime.Fail(err)
 			}
 
-			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegradedSonarr, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: fmt.Sprintf("Finalized %s before deletion", sonarr.Name)})
+			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: fmt.Sprintf("Finalized %s before deletion", sonarr.Name)})
 
 			if err := r.Status().Update(ctx, sonarr); err != nil {
 				log.Error(err, "failed to update sonarr status")
-				return ctrl.Result{}, err
+				return controllerruntime.Fail(err)
 			}
 
 			log.Info("removing finalizer from sonarr")
-			if ok := controllerutil.RemoveFinalizer(sonarr, sonarrFinalizer); !ok {
+			if ok := controllerutil.RemoveFinalizer(sonarr, finalizerName); !ok {
 				log.Info("failed to remove finalizer from sonarr")
-				return ctrl.Result{}, nil
+				return controllerruntime.Success()
 			}
 
 			if err := r.Update(ctx, sonarr); err != nil {
 				log.Error(err, "failed to remove finalizer from sonarr")
-				return ctrl.Result{}, err
+				return controllerruntime.Fail(err)
 			}
-
 		}
-		return ctrl.Result{}, nil
+		return controllerruntime.Success()
 	}
 
 	if err := r.createOrUpdateObjects(ctx, log, sonarr); err != nil {
@@ -156,7 +137,19 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// TODO: create the other resources for the Sonarr object
 
-	return ctrl.Result{}, nil
+	err := r.ensureStatefulSet(ctx, log, sonarr)
+	if err != nil {
+		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded})
+	}
+
+	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionTrue, Message: "Ready", Reason: "Ready"})
+	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionFalse, Message: "Healthy", Reason: "Healthy"})
+	if err := r.Status().Update(ctx, sonarr); err != nil {
+		log.Error(err, "unable to update sonarr status")
+		return controllerruntime.Fail(err)
+	}
+
+	log.Info("sonarr is ready")
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -176,7 +169,7 @@ func (r *SonarrReconciler) createOrUpdateObjects(ctx context.Context, log logr.L
 		ss, err := r.statefulSetForSonarr(sonarr)
 		if err != nil {
 			log.Error(err, "failed to generate StatefulSet for sonarr")
-			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailableSonarr, Status: metav1.ConditionFalse, Reason: "Reconciliation", Message: "Failed to generate StatefulSet"})
+			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionFalse, Reason: "Reconciliation", Message: "Failed to generate StatefulSet"})
 			return err
 		}
 

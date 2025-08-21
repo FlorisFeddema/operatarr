@@ -51,7 +51,8 @@ type SonarrPodTemplateSpec struct {
 	SecurityContext          *corev1.PodSecurityContext `json:"securityContext"`
 	ContainerSecurityContext *corev1.SecurityContext    `json:"ContainerSecurityContext"`
 
-	ConfigVolumeSpec *ConfigVolumeSpec `json:"configVolumeSpec"`
+	ConfigVolumeSpec *ConfigVolumeSpec       `json:"configVolumeSpec"`
+	MediaLibraryRef  *corev1.ObjectReference `json:"mediaLibraryRef,omitempty"`
 }
 
 // SonarrStatus defines the observed state of Sonarr

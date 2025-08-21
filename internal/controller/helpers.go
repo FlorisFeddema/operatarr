@@ -5,6 +5,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	finalizerName = "operatarr.feddema.dev/finalizer"
+
+	typeAvailable = "Available"
+	typeDegraded  = "Degraded"
+)
+
 func mergeMap(left, right map[string]string) map[string]string {
 	if left == nil {
 		return right
