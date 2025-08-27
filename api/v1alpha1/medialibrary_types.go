@@ -22,28 +22,54 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // MediaLibrarySpec defines the desired state of MediaLibrary
 type MediaLibrarySpec struct {
-	AccessModes      []corev1.PersistentVolumeAccessMode `json:"accessModes"`
-	Size             resource.Quantity                   `json:"size"`
-	StorageClassName *string                             `json:"storageClassName,omitempty"`
-	Annotations      map[string]string                   `json:"annotations,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:Required
+	// +kubebuilder:default={"ReadWriteMany"}
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+
+	// +kubebuilder:validation:Required
+	Size resource.Quantity `json:"size"`
+
+	// +kubebuilder:validation:Optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=false
+	CreatePV bool `json:"createPv"`
+
+	// +kubebuilder:validation:Optional
+	PVSpec *PVSpec `json:"pvSpec,omitempty"`
+}
+
+type PVSpec struct {
+	// +kubebuilder:validation:Enum=Retain;Recycle;Delete
+	// +kubebuilder:default=Retain
+	PersistentVolumeReclaimPolicy corev1.PersistentVolumeReclaimPolicy `json:"reclaimPolicy,omitempty"`
+
+	// +kubebuilder:validation:Enum=Filesystem;Block
+	// +kubebuilder:default=Filesystem
+	VolumeMode *corev1.PersistentVolumeMode `json:"volumeMode,omitempty"`
+
+	// +kubebuilder:validation:Required
+	CSI *corev1.CSIPersistentVolumeSource `json:"csi,omitempty"`
 }
 
 // MediaLibraryStatus defines the observed state of MediaLibrary
 type MediaLibraryStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// +operator-sdk:csv:customresourcedefinitions:type=status
+	// +kubebuilder:subresource:status
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=ml
+// +kubebuilder:printcolumn:name="Size",type="string",JSONPath=".spec.size",description="Size of the MediaLibrary"
+// +kubebuilder:resource:scope=Cluster
 
 // MediaLibrary is the Schema for the medialibraries API
 type MediaLibrary struct {

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt" //nolint:goimports
+
 	controllerruntime "github.com/FlorisFeddema/operatarr/internal/controller/controller-runtime"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -137,11 +138,11 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// TODO: create the other resources for the Sonarr object
 
-	err := r.ensureStatefulSet(ctx, log, sonarr)
-	if err != nil {
-		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded})
-	}
-
+	//err := r.ensureStatefulSet(ctx, log, sonarr)
+	//if err != nil {
+	//	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded})
+	//}
+	//
 	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionTrue, Message: "Ready", Reason: "Ready"})
 	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionFalse, Message: "Healthy", Reason: "Healthy"})
 	if err := r.Status().Update(ctx, sonarr); err != nil {
@@ -150,6 +151,7 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	log.Info("sonarr is ready")
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
