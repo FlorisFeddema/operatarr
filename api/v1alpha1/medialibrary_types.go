@@ -69,7 +69,7 @@ type MediaLibraryStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=ml
 // +kubebuilder:printcolumn:name="Size",type="string",JSONPath=".spec.size",description="Size of the MediaLibrary"
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Namespaced
 
 // MediaLibrary is the Schema for the medialibraries API
 type MediaLibrary struct {

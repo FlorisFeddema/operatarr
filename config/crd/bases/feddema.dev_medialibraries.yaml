@@ -12,7 +12,7 @@ spec:
     listKind: MediaLibraryList
     plural: medialibraries
     singular: medialibrary
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - description: Size of the MediaLibrary
