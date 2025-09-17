@@ -18,57 +18,80 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // MediaLibrarySpec defines the desired state of MediaLibrary
 type MediaLibrarySpec struct {
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:Required
-	// +kubebuilder:default={"ReadWriteMany"}
-	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+	// CrossNamespaceAccess defines whether the MediaLibrary should be accessible from other namespaces.
+	// +kubebuilder:default:=true
+	CrossNamespaceAccess bool `json:"crossNamespaceAccess,omitempty"`
 
+	// PVC defines the PersistentVolumeClaim to use for the MediaLibrary.
 	// +kubebuilder:validation:Required
-	Size resource.Quantity `json:"size"`
+	PVC MediaLibraryPVC `json:"pvc"`
 
+	// Permissions defines POSIX-like permissions to set on the MediaLibrary.
+	// +kubebuilder:validation:Optional
+	Permissions *mediaPermissions `json:"permissions,omitempty"`
+}
+
+// MediaLibraryPVC defines the PersistentVolumeClaim to use for the MediaLibrary.
+type MediaLibraryPVC struct {
+	// PVCName is name of a pre-existing PersistentVolumeClaim to use for the MediaLibrary.
+	// +kubebuilder:validation:Optional
+	PVCName *string `json:"pvcName,omitempty"`
+
+	// Resources defines the resource requirements for the MediaLibrary.
+	// +kubebuilder:validation:Optional
+	Resources corev1.VolumeResourceRequirements `json:"resources"`
+
+	// StorageClassName is the name of the StorageClass to use for the PersistentVolumeClaim.
 	// +kubebuilder:validation:Optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
 
+	// Annotations to add to the PersistentVolumeClaim.
 	// +kubebuilder:validation:Optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:default=false
-	CreatePV bool `json:"createPv"`
-
-	// +kubebuilder:validation:Optional
-	PVSpec *PVSpec `json:"pvSpec,omitempty"`
+	//+kubebuilder:validation:XValidation:rule="has(self.pvcName) or has(self.resources)",message="Either pvcName or resources must be set"
+	//+kubebuilder:validation:XValidation:rule="!(has(self.pvcName) and (has(self.resources) or has(self.storageClassName) or has(self.annotations))",message="Only pvcName or resources/storageClassName/annotations can be set, not both"
 }
 
-type PVSpec struct {
-	// +kubebuilder:validation:Enum=Retain;Recycle;Delete
-	// +kubebuilder:default=Retain
-	PersistentVolumeReclaimPolicy corev1.PersistentVolumeReclaimPolicy `json:"reclaimPolicy,omitempty"`
+// mediaPermissions defines POSIX-like permissions to set on the MediaLibrary.
+type mediaPermissions struct {
+	// RunAsUser is the user ID to run the MediaLibrary as.
+	// +kubebuilder:default:=5000
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
 
-	// +kubebuilder:validation:Enum=Filesystem;Block
-	// +kubebuilder:default=Filesystem
-	VolumeMode *corev1.PersistentVolumeMode `json:"volumeMode,omitempty"`
+	// RunAsGroup is the group ID to run the MediaLibrary as.
+	// +kubebuilder:default:=5000
+	RunAsGroup *int64 `json:"runAsGroup,omitempty"`
 
-	// +kubebuilder:validation:Required
-	CSI *corev1.CSIPersistentVolumeSource `json:"csi,omitempty"`
+	// FSGroup is the group ID to set on the MediaLibrary files.
+	// +kubebuilder:default:=5000
+	FSGroup *int64 `json:"fsGroup,omitempty"`
+
+	// SupplementalGroups is the supplemental group IDs to set on the MediaLibrary files.
+	// +kubebuilder:validation:Optional
+	SupplementalGroups *int64 `json:"supplementalGroups,omitempty"`
 }
 
 // MediaLibraryStatus defines the observed state of MediaLibrary
 type MediaLibraryStatus struct {
+	// Conditions represent the latest available observations of an object's state
 	// +kubebuilder:subresource:status
-	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// EffectivePVC is the name of the PersistentVolumeClaim used for this MediaLibrary.
+	EffectivePVC *string `json:"effectivePVC,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=ml
-// +kubebuilder:printcolumn:name="Size",type="string",JSONPath=".spec.size",description="Size of the MediaLibrary"
+// +kubebuilder:printcolumn:name="PVC",type=string,JSONPath=`.status.actualPVCName`,description="The name of the PersistentVolumeClaim"
+// +kubebuilder:printcolumn:name="Size",type=date,JSONPath=`.status.resources.requests.storage`,description="The size of the MediaLibrary"
 // +kubebuilder:resource:scope=Namespaced
 
 // MediaLibrary is the Schema for the medialibraries API
