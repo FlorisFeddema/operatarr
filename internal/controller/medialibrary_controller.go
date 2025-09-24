@@ -84,25 +84,22 @@ func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 func (r *mediaLibraryReconcile) reconcile() error {
 	// Load the object desired state based on resource, operator config and default values.
-	if err := r.LoadAndValidateDesiredState(); err != nil {
+	if err := r.LoadDesiredState(); err != nil {
 		return err
 	}
 
 	reconcilers := []func() error{
-		r.reconcilePvc,
+		r.reconcileMainPvc,
 	}
 
-	errChan := utils.RunConcurrently(reconcilers...)
-	errList := utils.ChannelToSlice(errChan)
-
-	if err := errors.Join(errList...); err != nil {
+	err := utils.RunConcurrently(reconcilers...)
+	if err != nil {
 		return err
 	}
-
 	return nil
 }
 
-func (r *mediaLibraryReconcile) LoadAndValidateDesiredState() error {
+func (r *mediaLibraryReconcile) LoadDesiredState() error {
 	mediaLibrary := &feddemadevv1alpha1.MediaLibrary{}
 	mediaLibrary.Name = r.library.Name
 	mediaLibrary.Namespace = r.library.Namespace
@@ -121,17 +118,17 @@ func (r *MediaLibraryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *mediaLibraryReconcile) reconcilePvc() error {
+func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 	desired := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        r.library.Name,
 			Namespace:   r.library.Namespace,
-			Annotations: r.library.Spec.Annotations,
+			Annotations: r.library.Spec.PVC.Annotations,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes:      r.library.Spec.AccessModes,
-			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: r.library.Spec.Size}},
-			StorageClassName: r.library.Spec.StorageClassName,
+			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:        corev1.VolumeResourceRequirements{Requests: r.library.Spec.PVC.Resources.Requests},
+			StorageClassName: r.library.Spec.PVC.StorageClassName,
 		},
 	}
 
@@ -141,7 +138,7 @@ func (r *mediaLibraryReconcile) reconcilePvc() error {
 
 	pvc := desired.DeepCopy()
 	statusType, err := controllerutil.CreateOrPatch(r.ctx, r.Client, pvc, func() error {
-		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = r.library.Spec.Size
+		pvc.Spec.Resources.Requests = r.library.Spec.PVC.Resources.Requests
 		setMergedLabelsAndAnnotations(pvc, desired)
 		return nil
 	})
