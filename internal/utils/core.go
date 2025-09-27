@@ -1,6 +1,10 @@
 package utils
 
-import "sync"
+import (
+	"sync"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 import "errors"
 
 // RunConcurrently runs a list of functions concurrently and returns a channel with their errors
@@ -37,4 +41,21 @@ func channelToSlice[T any](c chan T) []T {
 		list = append(list, value)
 	}
 	return list
+}
+
+func MergeConditions(i *[]metav1.Condition, cond metav1.Condition) {
+	existingConditions := *i
+	now := metav1.Now()
+	cond.LastTransitionTime = now
+
+	for idx, c := range existingConditions {
+		if c.Type == cond.Type {
+			// Only update the condition if the status has changed
+			if c.Status != cond.Status {
+				existingConditions[idx] = cond
+			}
+			*i = existingConditions
+			return
+		}
+	}
 }

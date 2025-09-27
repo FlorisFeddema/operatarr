@@ -17,7 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -33,7 +33,7 @@ type MediaLibrarySpec struct {
 
 	// Permissions defines POSIX-like permissions to set on the MediaLibrary.
 	// +kubebuilder:validation:Optional
-	Permissions *mediaPermissions `json:"permissions,omitempty"`
+	Permissions *MediaPermissions `json:"permissions,omitempty"`
 }
 
 // MediaLibraryPVC defines the PersistentVolumeClaim to use for the MediaLibrary.
@@ -42,9 +42,9 @@ type MediaLibraryPVC struct {
 	// +kubebuilder:validation:Optional
 	PVCName *string `json:"pvcName,omitempty"`
 
-	// Resources defines the resource requirements for the MediaLibrary.
+	// Size defines the size of the PersistentVolumeClaim to create for the MediaLibrary.
 	// +kubebuilder:validation:Optional
-	Resources corev1.VolumeResourceRequirements `json:"resources"`
+	Size resource.Quantity `json:"size"`
 
 	// StorageClassName is the name of the StorageClass to use for the PersistentVolumeClaim.
 	// +kubebuilder:validation:Optional
@@ -58,8 +58,8 @@ type MediaLibraryPVC struct {
 	//+kubebuilder:validation:XValidation:rule="!(has(self.pvcName) and (has(self.resources) or has(self.storageClassName) or has(self.annotations))",message="Only pvcName or resources/storageClassName/annotations can be set, not both"
 }
 
-// mediaPermissions defines POSIX-like permissions to set on the MediaLibrary.
-type mediaPermissions struct {
+// MediaPermissions defines POSIX-like permissions to set on the MediaLibrary.
+type MediaPermissions struct {
 	// RunAsUser is the user ID to run the MediaLibrary as.
 	// +kubebuilder:default:=5000
 	RunAsUser *int64 `json:"runAsUser,omitempty"`
