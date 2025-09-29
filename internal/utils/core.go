@@ -54,8 +54,8 @@ func MergeConditions(i *[]metav1.Condition, cond metav1.Condition) {
 			if c.Status != cond.Status {
 				existingConditions[idx] = cond
 			}
-			*i = existingConditions
 			return
 		}
 	}
+	*i = append(existingConditions, cond)
 }

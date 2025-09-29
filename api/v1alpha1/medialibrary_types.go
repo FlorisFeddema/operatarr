@@ -48,6 +48,7 @@ type MediaLibraryPVC struct {
 
 	// StorageClassName is the name of the StorageClass to use for the PersistentVolumeClaim.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	StorageClassName *string `json:"storageClassName,omitempty"`
 
 	// Annotations to add to the PersistentVolumeClaim.

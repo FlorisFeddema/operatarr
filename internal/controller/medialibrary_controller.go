@@ -17,9 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
@@ -90,6 +92,7 @@ func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	err := reconcileHandler.reconcile()
 	if err != nil {
 		log.Error(err, "MediaLibrary reconciliation failed")
+		os.Exit(1) // TODO: remove exit once it is stable
 	} else {
 		log.Info("MediaLibrary reconciliation completed successfully")
 	}
@@ -97,6 +100,22 @@ func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *mediaLibraryReconcile) reconcile() error {
+	//Check if the resource is being deleted
+	if err := r.Get(r.ctx, client.ObjectKey{Namespace: r.library.Namespace, Name: r.library.Name}, &r.library); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			r.log.Error(err, "unable to fetch MediaLibrary")
+			return err
+		}
+		// Resource not found, could have been deleted after reconcile request.
+		r.log.Info("MediaLibrary resource not found. Ignoring since object must be deleted.")
+		return nil
+	}
+	if !r.library.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is being deleted
+		r.log.Info("MediaLibrary resource is being deleted")
+		return nil
+	}
+
 	// Load the object desired state based on resource, operator config and default values.
 	if err := r.LoadDesiredState(); err != nil {
 		return err
@@ -153,7 +172,6 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 			return errors.Join(err, errors.New("unable to fetch pre-existing PVC"))
 		}
 
-		//set status condition
 		cond := metav1.Condition{
 			Type:    "Available",
 			Status:  metav1.ConditionTrue,
@@ -175,35 +193,39 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 	pvc.Name = r.library.Name
 	pvc.Namespace = r.library.Namespace
 
-	opResult, err := controllerutil.CreateOrUpdate(r.ctx, r.Client, pvc, func() error {
+	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, pvc, func() error {
 		if err := ctrl.SetControllerReference(&r.library, pvc, r.Scheme); err != nil {
 			return errors.Join(err, errors.New("unable to set controller owner reference for PVC"))
 		}
+
+		r.log.Info("Checking storage class", "pvcStorageClass", pvc.Spec.StorageClassName, "libraryStorageClass", r.library.Spec.PVC.StorageClassName)
+		storageClass := cmp.Or(pvc.Spec.StorageClassName, r.library.Spec.PVC.StorageClassName)
 		pvc.Spec = corev1.PersistentVolumeClaimSpec{
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{"storage": r.library.Spec.PVC.Size}},
-			StorageClassName: r.library.Spec.PVC.StorageClassName,
+			StorageClassName: storageClass,
 		}
 		pvc.Annotations = mergeMap(pvc.Annotations, r.library.Spec.PVC.Annotations)
-
-		cond := metav1.Condition{
-			Type:    "Available",
-			Status:  metav1.ConditionTrue,
-			Reason:  "PVCCreated",
-			Message: fmt.Sprintf("The PVC '%s' was successfully created or already exists", pvc.Name),
-		}
-		utils.MergeConditions(&r.library.Status.Conditions, cond)
-		r.library.Status.EffectivePVC = &pvc.Name
-		//updateErr := r.Status().Update(r.ctx, &r.library)
-		//if updateErr != nil {
-		//	r.log.Error(updateErr, "unable to update MediaLibrary status")
-		//	return updateErr
-		//}
 
 		return nil
 	})
 	if err != nil {
 		return errors.Join(err, errors.New(fmt.Sprintf("unable to create or patch PVC with status %s", opResult)))
+	}
+
+	cond := metav1.Condition{
+		Type:    "Available",
+		Status:  metav1.ConditionTrue,
+		Reason:  "PVCCreated",
+		Message: fmt.Sprintf("The PVC '%s' was successfully created", pvc.Name),
+	}
+	utils.MergeConditions(&r.library.Status.Conditions, cond)
+	r.log.Info("Condition set", "condition", &r.library.Status.Conditions)
+	r.library.Status.EffectivePVC = &pvc.Name
+	err = r.Status().Update(r.ctx, &r.library)
+	if err != nil {
+		r.log.Error(err, "unable to update MediaLibrary status")
+		return err
 	}
 	return nil
 }

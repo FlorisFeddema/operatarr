@@ -106,6 +106,9 @@ spec:
                     description: StorageClassName is the name of the StorageClass
                       to use for the PersistentVolumeClaim.
                     type: string
+                    x-kubernetes-validations:
+                    - message: Value is immutable
+                      rule: self == oldSelf
                 type: object
             required:
             - pvc
