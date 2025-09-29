@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
@@ -120,7 +121,6 @@ func (r *mediaLibraryReconcile) reconcile() error {
 	if err := r.LoadDesiredState(); err != nil {
 		return err
 	}
-	r.log.Info("Desired state loaded")
 
 	r.log.Info("Running reconcilers")
 	reconcilers := []func() error{
@@ -141,6 +141,7 @@ func (r *mediaLibraryReconcile) LoadDesiredState() error {
 		r.log.Error(err, "unable to fetch mediaLibrary")
 		return err
 	}
+	r.log.Info("Desired state loaded")
 	return nil
 }
 
@@ -156,7 +157,6 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		if err != nil {
 			r.log.Error(err, "unable to fetch pre-existing PVC", "pvcName", *r.library.Spec.PVC.PVCName)
 
-			//set status condition
 			cond := metav1.Condition{
 				Type:    "Available",
 				Status:  metav1.ConditionFalse,
@@ -170,6 +170,25 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 				return errors.Join(err, updateErr)
 			}
 			return errors.Join(err, errors.New("unable to fetch pre-existing PVC"))
+		}
+
+		// Check if pvc has ReadWriteMany access mode
+		if !slices.Contains(pvc.Spec.AccessModes, corev1.ReadWriteMany) {
+			err := errors.New("pre-existing PVC does not have ReadWriteMany access mode")
+
+			cond := metav1.Condition{
+				Type:    "Available",
+				Status:  metav1.ConditionFalse,
+				Reason:  "ExistingPVCInvalid",
+				Message: "The specified pre-existing PVC '" + *r.library.Spec.PVC.PVCName + "' does not have ReadWriteMany access mode",
+			}
+			utils.MergeConditions(&r.library.Status.Conditions, cond)
+			updateErr := r.Status().Update(r.ctx, &r.library)
+			if updateErr != nil {
+				r.log.Error(updateErr, "unable to update MediaLibrary status")
+				return errors.Join(err, updateErr)
+			}
+			return err
 		}
 
 		cond := metav1.Condition{

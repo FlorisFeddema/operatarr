@@ -6,4 +6,17 @@ spec:
   pvc:
     storageClassName: ceph-block-nvme-2
     size: 2Gi
-
+#    pvcName: test-pvc
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: test-pvc
+spec:
+  accessModes:
+      - ReadWriteOnce
+      - ReadWriteMany
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: ceph-block-nvme-2
