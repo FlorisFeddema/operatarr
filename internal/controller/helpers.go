@@ -2,7 +2,6 @@ package controller
 
 import (
 	"maps"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -19,9 +18,4 @@ func mergeMap(left, right map[string]string) map[string]string {
 		maps.Copy(left, right)
 	}
 	return left
-}
-
-func setMergedLabelsAndAnnotations(temp, desired client.Object) {
-	temp.SetAnnotations(mergeMap(temp.GetAnnotations(), desired.GetAnnotations()))
-	temp.SetLabels(mergeMap(temp.GetLabels(), desired.GetLabels()))
 }
