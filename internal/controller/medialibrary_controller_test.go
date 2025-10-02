@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -50,6 +51,11 @@ var _ = Describe("MediaLibrary Controller", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
+					},
+					Spec: feddemadevv1alpha1.MediaLibrarySpec{
+						PVC: feddemadevv1alpha1.MediaLibraryPVC{
+							Size: resource.MustParse("1Gi"),
+						},
 					},
 					// TODO(user): Specify other spec details if needed.
 				}
