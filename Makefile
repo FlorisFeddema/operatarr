@@ -29,11 +29,11 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # feddema.dev/operatarr-bundle:$VERSION and feddema.dev/operatarr-catalog:$VERSION.
-IMAGE_TAG_BASE ?= ghcr.io/florisfeddema/operatarr
+IMAGE_TAG_BASE ?= harbor.feddema.dev/operatarr
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
-BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+BUNDLE_IMG ?= $(IMAGE_TAG_BASE)/operator-bundle:v$(VERSION)
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
@@ -142,7 +142,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build -t ${IMG} . --load
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -304,7 +304,7 @@ endif
 BUNDLE_IMGS ?= $(BUNDLE_IMG)
 
 # The image tag given to the resulting catalog image (e.g. make catalog-build CATALOG_IMG=example.com/operator-catalog:v0.2.0).
-CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
+CATALOG_IMG ?= $(IMAGE_TAG_BASE)/operator-catalog:v$(VERSION)
 
 # Set CATALOG_BASE_IMG to an existing catalog image tag to add $BUNDLE_IMGS to that image.
 ifneq ($(origin CATALOG_BASE_IMG), undefined)
@@ -322,3 +322,13 @@ catalog-build: opm ## Build a catalog image.
 .PHONY: catalog-push
 catalog-push: ## Push a catalog image.
 	$(MAKE) docker-push IMG=$(CATALOG_IMG)
+
+# Docker build jobrunner image for testing purposes
+.PHONY: docker-build-jobrunner
+docker-build-jobrunner: ## Build docker image with the jobrunner for testing purposes.
+	$(CONTAINER_TOOL) build -f jobrunner.Dockerfile -t $(IMAGE_TAG_BASE)/job-runner:dev . --load
+
+# Docker push jobrunner image for testing purposes
+.PHONY: docker-push-jobrunner
+docker-push-jobrunner: docker-build-jobrunner
+	$(CONTAINER_TOOL) push $(IMAGE_TAG_BASE)/job-runner:dev

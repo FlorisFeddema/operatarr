@@ -21,7 +21,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 
 	"github.com/FlorisFeddema/operatarr/internal/utils"
@@ -93,7 +92,6 @@ func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	err := reconcileHandler.reconcile()
 	if err != nil {
 		log.Error(err, "MediaLibrary reconciliation failed")
-		os.Exit(1) // TODO: remove exit once it is stable
 	} else {
 		log.Info("MediaLibrary reconciliation completed successfully")
 	}
@@ -175,11 +173,10 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		// Check if pvc has ReadWriteMany access mode
 		if !slices.Contains(pvc.Spec.AccessModes, corev1.ReadWriteMany) {
 			err := errors.New("pre-existing PVC does not have ReadWriteMany access mode")
-
 			cond := metav1.Condition{
 				Type:    "Available",
 				Status:  metav1.ConditionFalse,
-				Reason:  "ExistingPVCInvalid",
+				Reason:  "ExistingPVCInvalidAccessMode",
 				Message: "The specified pre-existing PVC '" + *r.library.Spec.PVC.PVCName + "' does not have ReadWriteMany access mode",
 			}
 			utils.MergeConditions(&r.library.Status.Conditions, cond)

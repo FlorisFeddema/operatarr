@@ -178,6 +178,11 @@ spec:
                 description: EffectivePVC is the name of the PersistentVolumeClaim
                   used for this MediaLibrary.
                 type: string
+              initialized:
+                default: false
+                description: Initialized indicates whether the MediaLibrary has been
+                  initialized.
+                type: boolean
             type: object
         type: object
     served: true

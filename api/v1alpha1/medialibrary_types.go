@@ -86,6 +86,10 @@ type MediaLibraryStatus struct {
 
 	// EffectivePVC is the name of the PersistentVolumeClaim used for this MediaLibrary.
 	EffectivePVC *string `json:"effectivePVC,omitempty"`
+
+	//Initialized indicates whether the MediaLibrary has been initialized.
+	// +kubebuilder:default:=false
+	Initialized bool `json:"initialized,omitempty"`
 }
 
 // +kubebuilder:object:root=true
