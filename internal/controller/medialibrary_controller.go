@@ -25,6 +25,7 @@ import (
 
 	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
+	v1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,7 +42,8 @@ import (
 // MediaLibraryReconciler reconciles a MediaLibrary object
 type MediaLibraryReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	JobRunnerImage string
 }
 
 // A local reconcile object tied to a single reconcile iteration
@@ -162,6 +164,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 				Message: "The specified pre-existing PVC '" + *r.library.Spec.PVC.PVCName + "' was not found",
 			}
 			utils.MergeConditions(&r.library.Status.Conditions, cond)
+			r.library.Status.Initialized = true
 			updateErr := r.Status().Update(r.ctx, &r.library)
 			if updateErr != nil {
 				r.log.Error(updateErr, "unable to update MediaLibrary status")
@@ -201,6 +204,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 			r.log.Error(updateErr, "unable to update MediaLibrary status")
 			return updateErr
 		}
+
 		return nil
 	}
 
@@ -229,19 +233,157 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		return errors.Join(err, errors.New(fmt.Sprintf("unable to create or patch PVC with status %s", opResult)))
 	}
 
-	cond := metav1.Condition{
-		Type:    "Available",
-		Status:  metav1.ConditionTrue,
-		Reason:  "PVCCreated",
-		Message: fmt.Sprintf("The PVC '%s' was successfully created", pvc.Name),
+	if opResult != controllerutil.OperationResultNone {
+		r.log.Info("PVC reconciled with result", "result", opResult)
+		cond := metav1.Condition{
+			Type:    "Available",
+			Status:  metav1.ConditionFalse,
+			Reason:  "PVCCreated",
+			Message: fmt.Sprintf("The PVC '%s' was successfully created", pvc.Name),
+		}
+		utils.MergeConditions(&r.library.Status.Conditions, cond)
+		r.log.Info("Condition set", "condition", &r.library.Status.Conditions)
+		r.library.Status.EffectivePVC = &pvc.Name
+		err = r.Status().Update(r.ctx, &r.library)
+		if err != nil {
+			r.log.Error(err, "unable to update MediaLibrary status")
+			return err
+		}
+		return nil
 	}
-	utils.MergeConditions(&r.library.Status.Conditions, cond)
-	r.log.Info("Condition set", "condition", &r.library.Status.Conditions)
-	r.library.Status.EffectivePVC = &pvc.Name
-	err = r.Status().Update(r.ctx, &r.library)
-	if err != nil {
-		r.log.Error(err, "unable to update MediaLibrary status")
-		return err
+
+	if !r.library.Status.Initialized {
+		r.log.Info("Initializing media library")
+
+		// create kubernetes job to initialize the pvc
+		job := newPvcInitJob(&r.library, r.JobRunnerImage)
+		if err := ctrl.SetControllerReference(&r.library, job, r.Scheme); err != nil {
+			return errors.Join(err, errors.New("unable to set controller owner reference for PVC initialization job"))
+		}
+
+		// check if an existing job is running
+		err = r.Get(r.ctx, client.ObjectKeyFromObject(job), job)
+		if err == nil {
+			// job exists, check if it's completed
+			for _, c := range job.Status.Conditions {
+				if c.Type == v1.JobComplete && c.Status == corev1.ConditionTrue {
+					r.log.Info("PVC initialization job completed successfully")
+
+					// if job completed successfully, set initialized to true
+					cond := metav1.Condition{
+						Type:    "Available",
+						Status:  metav1.ConditionTrue,
+						Reason:  "PVCInitialized",
+						Message: fmt.Sprintf("The PVC '%s' is initialized", pvc.Name),
+					}
+					utils.MergeConditions(&r.library.Status.Conditions, cond)
+					r.library.Status.Initialized = true
+					err = r.Status().Update(r.ctx, &r.library)
+					if err != nil {
+						r.log.Error(err, "unable to update MediaLibrary status")
+						return err
+					}
+					return nil
+				}
+			}
+
+			r.log.Info("PVC initialization job is still running")
+			return nil
+		}
+
+		err = r.Create(r.ctx, job)
+		if err != nil {
+			r.log.Error(err, "unable to create PVC initialization job")
+			return errors.Join(err, errors.New("unable to create PVC initialization job"))
+		}
+
+		// if job completed successfully, set initialized to true
+		cond := metav1.Condition{
+			Type:    "Available",
+			Status:  metav1.ConditionTrue,
+			Reason:  "PVCInitialized",
+			Message: fmt.Sprintf("The PVC '%s' is initialized", pvc.Name),
+		}
+		utils.MergeConditions(&r.library.Status.Conditions, cond)
+		r.library.Status.Initialized = true
+		err = r.Status().Update(r.ctx, &r.library)
+
 	}
+
 	return nil
+}
+
+func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
+	return &v1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      f.Name + "-pvc-init",
+			Namespace: f.Namespace,
+		},
+		Spec: v1.JobSpec{
+			Parallelism:             utils.PtrToInt32(1),
+			Completions:             utils.PtrToInt32(1),
+			ActiveDeadlineSeconds:   utils.PtrToInt64(180),
+			BackoffLimit:            utils.PtrToInt32(1),
+			TTLSecondsAfterFinished: utils.PtrToInt32(3600),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      f.Name + "-pvc-init",
+					Namespace: f.Namespace,
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "library",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: *f.Status.EffectivePVC,
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "initializer",
+							Image: image,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    utils.MustParseResource("20m"),
+									corev1.ResourceMemory: utils.MustParseResource("32Mi"),
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "library",
+									MountPath: "/library",
+								},
+							},
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: utils.PtrToBool(false),
+								Privileged:               utils.PtrToBool(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								ReadOnlyRootFilesystem: utils.PtrToBool(true),
+							},
+						},
+					},
+					RestartPolicy: corev1.RestartPolicyNever,
+					NodeSelector:  map[string]string{"kubernetes.io/arch": "arm64"}, // TODO: remove once multi-arch support is added
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot:       utils.PtrToBool(true),
+						RunAsUser:          f.Spec.Permissions.RunAsUser,
+						RunAsGroup:         f.Spec.Permissions.RunAsGroup,
+						FSGroup:            f.Spec.Permissions.FSGroup,
+						SupplementalGroups: f.Spec.Permissions.SupplementalGroups,
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					ImagePullSecrets: nil, //TODO: add later if needed
+				},
+			},
+		},
+	}
+
 }

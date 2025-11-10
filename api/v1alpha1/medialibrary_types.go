@@ -75,7 +75,7 @@ type MediaPermissions struct {
 
 	// SupplementalGroups is the supplemental group IDs to set on the MediaLibrary files.
 	// +kubebuilder:validation:Optional
-	SupplementalGroups *int64 `json:"supplementalGroups,omitempty"`
+	SupplementalGroups []int64 `json:"supplementalGroups,omitempty"`
 }
 
 // MediaLibraryStatus defines the observed state of MediaLibrary

@@ -212,8 +212,8 @@ func (in *MediaPermissions) DeepCopyInto(out *MediaPermissions) {
 	}
 	if in.SupplementalGroups != nil {
 		in, out := &in.SupplementalGroups, &out.SupplementalGroups
-		*out = new(int64)
-		**out = **in
+		*out = make([]int64, len(*in))
+		copy(*out, *in)
 	}
 }
 

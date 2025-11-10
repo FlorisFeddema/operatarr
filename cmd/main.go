@@ -153,8 +153,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.MediaLibraryReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		JobRunnerImage: jobRunnerImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "MediaLibrary")
 		os.Exit(1)

@@ -3,6 +3,7 @@ package utils
 import (
 	"sync"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 import "errors"
@@ -58,4 +59,12 @@ func MergeConditions(i *[]metav1.Condition, cond metav1.Condition) {
 		}
 	}
 	*i = append(existingConditions, cond)
+}
+
+func MustParseResource(s string) resource.Quantity {
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		panic(err)
+	}
+	return q
 }
