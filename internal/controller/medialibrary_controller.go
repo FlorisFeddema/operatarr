@@ -253,61 +253,73 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 	}
 
 	if !r.library.Status.Initialized {
-		r.log.Info("Initializing media library")
+		return initializeJob(r)
+	}
 
-		// create kubernetes job to initialize the pvc
-		job := newPvcInitJob(&r.library, r.JobRunnerImage)
-		if err := ctrl.SetControllerReference(&r.library, job, r.Scheme); err != nil {
-			return errors.Join(err, errors.New("unable to set controller owner reference for PVC initialization job"))
-		}
+	return nil
+}
 
-		// check if an existing job is running
-		err = r.Get(r.ctx, client.ObjectKeyFromObject(job), job)
-		if err == nil {
-			// job exists, check if it's completed
-			for _, c := range job.Status.Conditions {
-				if c.Type == v1.JobComplete && c.Status == corev1.ConditionTrue {
-					r.log.Info("PVC initialization job completed successfully")
+func initializeJob(r *mediaLibraryReconcile) error {
+	r.log.Info("Initializing media library")
 
-					// if job completed successfully, set initialized to true
-					cond := metav1.Condition{
-						Type:    "Available",
-						Status:  metav1.ConditionTrue,
-						Reason:  "PVCInitialized",
-						Message: fmt.Sprintf("The PVC '%s' is initialized", pvc.Name),
-					}
-					utils.MergeConditions(&r.library.Status.Conditions, cond)
-					r.library.Status.Initialized = true
-					err = r.Status().Update(r.ctx, &r.library)
-					if err != nil {
-						r.log.Error(err, "unable to update MediaLibrary status")
-						return err
-					}
-					return nil
+	// create kubernetes job to initialize the pvc
+	job := newPvcInitJob(&r.library, r.JobRunnerImage)
+	if err := ctrl.SetControllerReference(&r.library, job, r.Scheme); err != nil {
+		return errors.Join(err, errors.New("unable to set controller owner reference for PVC initialization job"))
+	}
+
+	// check if an existing job is running
+	err := r.Get(r.ctx, client.ObjectKeyFromObject(job), job)
+	if err == nil {
+		// job exists, check if it's completed
+		for _, c := range job.Status.Conditions {
+			if c.Type == v1.JobComplete && c.Status == corev1.ConditionTrue {
+				r.log.Info("PVC initialization job completed successfully")
+
+				// if job completed successfully, set initialized to true
+				cond := metav1.Condition{
+					Type:    "Available",
+					Status:  metav1.ConditionTrue,
+					Reason:  "PVCInitialized",
+					Message: "The PVC is initialized",
 				}
+				utils.MergeConditions(&r.library.Status.Conditions, cond)
+				r.library.Status.Initialized = true
+				err = r.Status().Update(r.ctx, &r.library)
+				if err != nil {
+					r.log.Error(err, "unable to update MediaLibrary status")
+					return err
+				}
+				return nil
 			}
 
-			r.log.Info("PVC initialization job is still running")
-			return nil
+			if c.Type == v1.JobFailed && c.Status == corev1.ConditionTrue {
+				r.log.Error(errors.New(c.Message), "PVC initialization job failed")
+
+				cond := metav1.Condition{
+					Type:    "Available",
+					Status:  metav1.ConditionFalse,
+					Reason:  "PVCInitializationFailed",
+					Message: "The PVC initialization job failed: " + c.Message,
+				}
+				utils.MergeConditions(&r.library.Status.Conditions, cond)
+				err = r.Status().Update(r.ctx, &r.library)
+				if err != nil {
+					r.log.Error(err, "unable to update MediaLibrary status")
+					return err
+				}
+				return nil
+			}
 		}
 
-		err = r.Create(r.ctx, job)
-		if err != nil {
-			r.log.Error(err, "unable to create PVC initialization job")
-			return errors.Join(err, errors.New("unable to create PVC initialization job"))
-		}
+		r.log.Info("PVC initialization job is still running")
+		return nil
+	}
 
-		// if job completed successfully, set initialized to true
-		cond := metav1.Condition{
-			Type:    "Available",
-			Status:  metav1.ConditionTrue,
-			Reason:  "PVCInitialized",
-			Message: fmt.Sprintf("The PVC '%s' is initialized", pvc.Name),
-		}
-		utils.MergeConditions(&r.library.Status.Conditions, cond)
-		r.library.Status.Initialized = true
-		err = r.Status().Update(r.ctx, &r.library)
-
+	err = r.Create(r.ctx, job)
+	if err != nil {
+		r.log.Error(err, "unable to create PVC initialization job")
+		return errors.Join(err, errors.New("unable to create PVC initialization job"))
 	}
 
 	return nil
