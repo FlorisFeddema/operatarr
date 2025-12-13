@@ -443,5 +443,5 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
-/bin/
-/.idea/
+bin/
+.idea/
