@@ -301,29 +301,7 @@ func (in *SonarrPodTemplateSpec) DeepCopyInto(out *SonarrPodTemplateSpec) {
 			(*out)[key] = val
 		}
 	}
-	if in.Affinity != nil {
-		in, out := &in.Affinity, &out.Affinity
-		*out = new(corev1.Affinity)
-		(*in).DeepCopyInto(*out)
-	}
-	if in.Tolerations != nil {
-		in, out := &in.Tolerations, &out.Tolerations
-		*out = make([]corev1.Toleration, len(*in))
-		for i := range *in {
-			(*in)[i].DeepCopyInto(&(*out)[i])
-		}
-	}
 	in.Resources.DeepCopyInto(&out.Resources)
-	if in.SecurityContext != nil {
-		in, out := &in.SecurityContext, &out.SecurityContext
-		*out = new(corev1.PodSecurityContext)
-		(*in).DeepCopyInto(*out)
-	}
-	if in.ContainerSecurityContext != nil {
-		in, out := &in.ContainerSecurityContext, &out.ContainerSecurityContext
-		*out = new(corev1.SecurityContext)
-		(*in).DeepCopyInto(*out)
-	}
 	if in.ConfigVolumeSpec != nil {
 		in, out := &in.ConfigVolumeSpec, &out.ConfigVolumeSpec
 		*out = new(ConfigVolumeSpec)

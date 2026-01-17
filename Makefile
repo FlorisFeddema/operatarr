@@ -17,7 +17,7 @@ IMG ?= $(IMAGE_TAG_BASE)/operatarr:$(VERSION)
 JOB_RUNNER_IMG ?= $(IMAGE_TAG_BASE)/job-runner:$(VERSION)
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.31.0
+ENVTEST_K8S_VERSION = 1.35.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -106,7 +106,7 @@ PLATFORMS ?= linux/arm64,linux/amd64
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} . --load --platform $(PLATFORMS)
+	$(CONTAINER_TOOL) buildx build --manifest "${IMG}" --platform "${PLATFORMS}" .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

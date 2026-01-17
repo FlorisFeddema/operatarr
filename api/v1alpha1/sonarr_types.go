@@ -41,15 +41,9 @@ type SonarrPodTemplateSpec struct {
 	ImagePullPolicy  corev1.PullPolicy             `json:"imagePullPolicy,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
-	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
-	NodeName     string              `json:"nodeName,omitempty"`
-	Affinity     *corev1.Affinity    `json:"affinity,omitempty"`
-	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	SecurityContext          *corev1.PodSecurityContext `json:"securityContext"`
-	ContainerSecurityContext *corev1.SecurityContext    `json:"ContainerSecurityContext"`
 
 	ConfigVolumeSpec *ConfigVolumeSpec       `json:"configVolumeSpec"`
 	MediaLibraryRef  *corev1.ObjectReference `json:"mediaLibraryRef,omitempty"`
