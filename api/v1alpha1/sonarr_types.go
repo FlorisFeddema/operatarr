@@ -28,6 +28,10 @@ import (
 // SonarrSpec defines the desired state of Sonarr
 type SonarrSpec struct {
 	PodSpec SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self.kind == 'MediaLibrary'",message="mediaLibraryRef.kind must be 'MediaLibrary'"
+	MediaLibraryRef corev1.ObjectReference `json:"mediaLibraryRef"`
 }
 
 type ConfigVolumeSpec struct {
@@ -45,8 +49,13 @@ type SonarrPodTemplateSpec struct {
 
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	ConfigVolumeSpec *ConfigVolumeSpec       `json:"configVolumeSpec"`
-	MediaLibraryRef  *corev1.ObjectReference `json:"mediaLibraryRef,omitempty"`
+	ConfigVolumeSpec         *ConfigVolumeSpec          `json:"configVolumeSpec"`
+	MediaLibraryRef          *corev1.ObjectReference    `json:"mediaLibraryRef,omitempty"`
+	Affinity                 *corev1.Affinity           `json:"affinity,omitempty"`
+	Tolerations              []corev1.Toleration        `json:"tolerations,omitempty"`
+	NodeName                 string                     `json:"nodeName,omitempty"`
+	SecurityContext          *corev1.PodSecurityContext `json:"securityContext,omitempty"`
+	ContainerSecurityContext *corev1.SecurityContext    `json:"containerSecurityContext,omitempty"`
 }
 
 // SonarrStatus defines the observed state of Sonarr
