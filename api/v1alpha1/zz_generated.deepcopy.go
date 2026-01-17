@@ -307,11 +307,6 @@ func (in *SonarrPodTemplateSpec) DeepCopyInto(out *SonarrPodTemplateSpec) {
 		*out = new(ConfigVolumeSpec)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.MediaLibraryRef != nil {
-		in, out := &in.MediaLibraryRef, &out.MediaLibraryRef
-		*out = new(corev1.ObjectReference)
-		**out = **in
-	}
 	if in.Affinity != nil {
 		in, out := &in.Affinity, &out.Affinity
 		*out = new(corev1.Affinity)
@@ -333,6 +328,13 @@ func (in *SonarrPodTemplateSpec) DeepCopyInto(out *SonarrPodTemplateSpec) {
 		in, out := &in.ContainerSecurityContext, &out.ContainerSecurityContext
 		*out = new(corev1.SecurityContext)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.TopologySpreadConstraints != nil {
+		in, out := &in.TopologySpreadConstraints, &out.TopologySpreadConstraints
+		*out = make([]corev1.TopologySpreadConstraint, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 

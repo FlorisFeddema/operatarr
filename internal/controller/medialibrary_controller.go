@@ -42,7 +42,8 @@ import (
 // MediaLibraryReconciler reconciles a MediaLibrary object
 type MediaLibraryReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
+	Scheme *runtime.Scheme
+
 	JobRunnerImage string
 }
 

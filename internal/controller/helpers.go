@@ -14,8 +14,7 @@ const (
 func mergeMap(left, right map[string]string) map[string]string {
 	if left == nil {
 		return right
-	} else {
-		maps.Copy(left, right)
 	}
+	maps.Copy(left, right)
 	return left
 }

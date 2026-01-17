@@ -43,6 +43,8 @@ import (
 type SonarrReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	Timezone string
 }
 
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
@@ -137,6 +139,7 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// TODO: create the other resources for the Sonarr object
+	// TODO: like service, headless-service, ingress/route
 
 	//err := r.ensureStatefulSet(ctx, log, sonarr)
 	//if err != nil {
@@ -199,7 +202,7 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 			Replicas:             ptr.To(int32(1)),
 			RevisionHistoryLimit: ptr.To(int32(1)),
 
-			ServiceName: sonarr.Name,
+			ServiceName: fmt.Sprintf("%s-headless", sonarr.Name),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -208,10 +211,12 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Affinity:         sonarr.Spec.PodSpec.Affinity,
-					NodeSelector:     sonarr.Spec.PodSpec.NodeSelector,
-					Tolerations:      sonarr.Spec.PodSpec.Tolerations,
-					NodeName:         sonarr.Spec.PodSpec.NodeName,
+					Affinity:                  sonarr.Spec.PodSpec.Affinity,
+					NodeSelector:              sonarr.Spec.PodSpec.NodeSelector,
+					Tolerations:               sonarr.Spec.PodSpec.Tolerations,
+					TopologySpreadConstraints: sonarr.Spec.PodSpec.TopologySpreadConstraints,
+					NodeName:                  sonarr.Spec.PodSpec.NodeName,
+					//TODO: Set user/group/fs IDs from media library spec
 					SecurityContext:  sonarr.Spec.PodSpec.SecurityContext,
 					ImagePullSecrets: sonarr.Spec.PodSpec.ImagePullSecrets,
 					Containers: []corev1.Container{
@@ -225,18 +230,41 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 								Protocol:      corev1.ProtocolTCP,
 							}},
 							LivenessProbe: &corev1.Probe{
+								FailureThreshold:    5,
+								InitialDelaySeconds: 5,
+								PeriodSeconds:       5,
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/ping",
-										Port: intstr.FromString("http")},
+										Path:   "/ping",
+										Scheme: corev1.URISchemeHTTP,
+										Port:   intstr.FromInt32(8989),
+									},
 								},
 							},
 							ReadinessProbe: &corev1.Probe{
+								FailureThreshold:    5,
+								InitialDelaySeconds: 5,
+								PeriodSeconds:       5,
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/ping",
-										Port: intstr.FromString("http"),
+										Path:   "/ping",
+										Scheme: corev1.URISchemeHTTP,
+										Port:   intstr.FromInt32(8989),
 									},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name:  "TZ",
+									Value: r.Timezone,
+								},
+								{
+									Name:  "PUID",
+									Value: "", //TODO: get from media library spec
+								},
+								{
+									Name:  "PGID",
+									Value: "", //TODO: get from media library spec
 								},
 							},
 							Resources:       sonarr.Spec.PodSpec.Resources,
@@ -246,11 +274,25 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 									Name:      "config",
 									MountPath: "/config",
 								},
-								//TODO: Add media volume
+								{
+									Name:      "media",
+									MountPath: "/media",
+								},
 							},
 						},
 					},
-					//TODO: Volumes
+					//TODO: Add media volume
+					Volumes: []corev1.Volume{
+						{
+							Name: "media",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: "mediaPvcName",
+								},
+							},
+						},
+					},
+					//TODO: Add media volume
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{

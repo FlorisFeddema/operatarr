@@ -27,6 +27,7 @@ import (
 
 // SonarrSpec defines the desired state of Sonarr
 type SonarrSpec struct {
+	// +kubebuilder:validation:Required
 	PodSpec SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
 
 	// +kubebuilder:validation:Required
@@ -35,27 +36,43 @@ type SonarrSpec struct {
 }
 
 type ConfigVolumeSpec struct {
-	AccessModes      []corev1.PersistentVolumeAccessMode `json:"accessModes"`
-	Size             resource.Quantity                   `json:"resources"`
-	StorageClassName *string                             `json:"StorageClassName,omitempty"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:={"ReadWriteOnce"}
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes"`
+	// +kubebuilder:validation:Required
+	Size resource.Quantity `json:"resources"`
+	// +kubebuilder:validation:Optional
+	StorageClassName *string `json:"StorageClassName,omitempty"`
 }
 
 type SonarrPodTemplateSpec struct {
-	Image            string                        `json:"image"`
-	ImagePullPolicy  corev1.PullPolicy             `json:"imagePullPolicy,omitempty"`
+	// +kubebuilder:validation:Required
+	Image string `json:"image"`
+	// +kubebuilder:validation:Optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+	// +kubebuilder:validation:Optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
+	// +kubebuilder:validation:Optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
+	// +kubebuilder:validation:Optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	ConfigVolumeSpec         *ConfigVolumeSpec          `json:"configVolumeSpec"`
-	MediaLibraryRef          *corev1.ObjectReference    `json:"mediaLibraryRef,omitempty"`
-	Affinity                 *corev1.Affinity           `json:"affinity,omitempty"`
-	Tolerations              []corev1.Toleration        `json:"tolerations,omitempty"`
-	NodeName                 string                     `json:"nodeName,omitempty"`
-	SecurityContext          *corev1.PodSecurityContext `json:"securityContext,omitempty"`
-	ContainerSecurityContext *corev1.SecurityContext    `json:"containerSecurityContext,omitempty"`
+	// +kubebuilder:validation:Required
+	ConfigVolumeSpec *ConfigVolumeSpec `json:"configVolumeSpec"`
+	// +kubebuilder:validation:Optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+	// +kubebuilder:validation:Optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// +kubebuilder:validation:Optional
+	NodeName string `json:"nodeName,omitempty"`
+	// +kubebuilder:validation:Optional
+	SecurityContext *corev1.PodSecurityContext `json:"securityContext,omitempty"`
+	// +kubebuilder:validation:Optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+	// +kubebuilder:validation:Optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 }
 
 // SonarrStatus defines the observed state of Sonarr
