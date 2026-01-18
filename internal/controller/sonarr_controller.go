@@ -19,9 +19,8 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt" //nolint:goimports
+	"fmt"
 
-	controllerruntime "github.com/FlorisFeddema/operatarr/internal/controller/controller-runtime"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,9 +30,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	lg "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -47,95 +48,130 @@ type SonarrReconciler struct {
 	Timezone string
 }
 
+type sonarrReconcile struct {
+	SonarrReconciler
+
+	ctx    context.Context
+	log    logr.Logger
+	object client.ObjectKey
+}
+
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs/finalizers,verbs=update
 
+// SetupWithManager sets up the controller with the Manager.
+func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	genChangedPredicate := predicate.GenerationChangedPredicate{}
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&feddemadevv1alpha1.Sonarr{}).
+		Owns(&appsv1.StatefulSet{},
+			builder.WithPredicates(genChangedPredicate),
+		).
+		Owns(&corev1.Service{},
+			builder.WithPredicates(genChangedPredicate),
+		).
+		Complete(r)
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Sonarr object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := lg.FromContext(ctx)
+	log.Info("Starting reconcile iteration for Sonarr", "req", req)
+
+	reconcileHandler := sonarrReconcile{}
+	reconcileHandler.SonarrReconciler = *r
+	reconcileHandler.ctx = ctx
+	reconcileHandler.log = log
+	reconcileHandler.object = client.ObjectKey{Name: req.Name, Namespace: req.Namespace}
+
+	err := reconcileHandler.reconcile()
+	if err != nil {
+		log.Error(err, "Failed to reconcile Sonarr")
+	} else {
+		log.Info("Successfully reconciled Sonarr")
+	}
+	return ctrl.Result{}, err
+}
+
+func (r *sonarrReconcile) reconcile() error {
+
 	sonarr := &feddemadevv1alpha1.Sonarr{}
 
-	if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
+	if err := r.Get(r.ctx, r.object, sonarr); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("sonarr instance not found. Ignoring since object must be deleted")
-			return controllerruntime.Success()
+			r.log.Info("sonarr instance not found. Ignoring since object must be deleted")
+			return nil
 		}
 
-		log.Error(err, "unable to fetch sonarr")
-		return controllerruntime.Fail(err)
+		r.log.Error(err, "unable to fetch sonarr")
+		return err
 	}
 
 	if len(sonarr.Status.Conditions) == 0 {
 		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionUnknown, Reason: "Reconciliation", Message: "Starting reconciliation"})
 
-		if err := r.Status().Update(ctx, sonarr); err != nil {
-			log.Error(err, "unable to update Sonarr status")
-			return controllerruntime.Fail(err)
+		if err := r.Status().Update(r.ctx, sonarr); err != nil {
+			r.log.Error(err, "unable to update Sonarr status")
+			return err
 		}
-		return controllerruntime.Success()
+		return nil
 	}
 
 	if !controllerutil.ContainsFinalizer(sonarr, finalizerName) {
-		log.Info("adding finalizer to sonarr")
+		r.log.Info("adding finalizer to sonarr")
 		if ok := controllerutil.AddFinalizer(sonarr, finalizerName); !ok {
-			return controllerruntime.Fail(errors.New("unable to add finalizer to sonarr"))
+			return errors.New("unable to add finalizer to sonarr")
 		}
-		if err := r.Update(ctx, sonarr); err != nil {
-			log.Error(err, "failed to update sonarr with finalizer")
-			return controllerruntime.Fail(err)
+		if err := r.Update(r.ctx, sonarr); err != nil {
+			r.log.Error(err, "failed to update sonarr with finalizer")
+			return err
 		}
-		return controllerruntime.Success()
+		return nil
 	}
 
 	if sonarr.GetDeletionTimestamp() != nil {
 		if controllerutil.ContainsFinalizer(sonarr, finalizerName) {
-			log.Info("performing finalization for sonarr before deletion")
+			r.log.Info("performing finalization for sonarr before deletion")
 			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionUnknown, Reason: "Finalizing", Message: fmt.Sprintf("Finalizing %s before deletion", sonarr.Name)})
 
-			if err := r.Status().Update(ctx, sonarr); err != nil {
-				log.Error(err, "failed to update sonarr status")
-				return controllerruntime.Fail(err)
+			if err := r.Status().Update(r.ctx, sonarr); err != nil {
+				r.log.Error(err, "failed to update sonarr status")
+				return err
 			}
 
 			// TODO: perform finalization
 
-			if err := r.Get(ctx, req.NamespacedName, sonarr); err != nil {
-				log.Error(err, "failed to re-fetch sonarr")
-				return controllerruntime.Fail(err)
+			if err := r.Get(r.ctx, r.object, sonarr); err != nil {
+				r.log.Error(err, "failed to re-fetch sonarr")
+				return err
 			}
 
 			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: fmt.Sprintf("Finalized %s before deletion", sonarr.Name)})
 
-			if err := r.Status().Update(ctx, sonarr); err != nil {
-				log.Error(err, "failed to update sonarr status")
-				return controllerruntime.Fail(err)
+			if err := r.Status().Update(r.ctx, sonarr); err != nil {
+				r.log.Error(err, "failed to update sonarr status")
+				return err
 			}
 
-			log.Info("removing finalizer from sonarr")
+			r.log.Info("removing finalizer from sonarr")
 			if ok := controllerutil.RemoveFinalizer(sonarr, finalizerName); !ok {
-				log.Info("failed to remove finalizer from sonarr")
-				return controllerruntime.Success()
+				r.log.Info("failed to remove finalizer from sonarr")
+				return nil
 			}
 
-			if err := r.Update(ctx, sonarr); err != nil {
-				log.Error(err, "failed to remove finalizer from sonarr")
-				return controllerruntime.Fail(err)
+			if err := r.Update(r.ctx, sonarr); err != nil {
+				r.log.Error(err, "failed to remove finalizer from sonarr")
+				return err
 			}
 		}
-		return controllerruntime.Success()
+		return nil
 	}
 
-	if err := r.createOrUpdateObjects(ctx, log, sonarr); err != nil {
-		return ctrl.Result{}, err
+	if err := r.createOrUpdateObjects(r.ctx, r.log, sonarr); err != nil {
+		return err
 	}
 
 	// TODO: create the other resources for the Sonarr object
@@ -148,22 +184,13 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	//
 	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionTrue, Message: "Ready", Reason: "Ready"})
 	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionFalse, Message: "Healthy", Reason: "Healthy"})
-	if err := r.Status().Update(ctx, sonarr); err != nil {
-		log.Error(err, "unable to update sonarr status")
-		return controllerruntime.Fail(err)
+	if err := r.Status().Update(r.ctx, sonarr); err != nil {
+		r.log.Error(err, "unable to update sonarr status")
+		return err
 	}
 
-	log.Info("sonarr is ready")
-	return ctrl.Result{}, nil
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&feddemadevv1alpha1.Sonarr{}).
-		Owns(&appsv1.StatefulSet{}).
-		Owns(&corev1.Service{}).
-		Complete(r)
+	r.log.Info("sonarr is ready")
+	return nil
 }
 
 func (r *SonarrReconciler) createOrUpdateObjects(ctx context.Context, log logr.Logger, sonarr *feddemadevv1alpha1.Sonarr) error {
