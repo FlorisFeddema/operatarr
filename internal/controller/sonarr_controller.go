@@ -139,45 +139,6 @@ func (r *sonarrReconcile) preconcile() error {
 }
 
 func (r *sonarrReconcile) oldreconcile() error {
-
-	if sonarr.GetDeletionTimestamp() != nil {
-		if controllerutil.ContainsFinalizer(sonarr, finalizerName) {
-			r.log.Info("performing finalization for sonarr before deletion")
-			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionUnknown, Reason: "Finalizing", Message: fmt.Sprintf("Finalizing %s before deletion", sonarr.Name)})
-
-			if err := r.Status().Update(r.ctx, sonarr); err != nil {
-				r.log.Error(err, "failed to update sonarr status")
-				return err
-			}
-
-			// TODO: perform finalization
-
-			if err := r.Get(r.ctx, r.object, sonarr); err != nil {
-				r.log.Error(err, "failed to re-fetch sonarr")
-				return err
-			}
-
-			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: fmt.Sprintf("Finalized %s before deletion", sonarr.Name)})
-
-			if err := r.Status().Update(r.ctx, sonarr); err != nil {
-				r.log.Error(err, "failed to update sonarr status")
-				return err
-			}
-
-			r.log.Info("removing finalizer from sonarr")
-			if ok := controllerutil.RemoveFinalizer(sonarr, finalizerName); !ok {
-				r.log.Info("failed to remove finalizer from sonarr")
-				return nil
-			}
-
-			if err := r.Update(r.ctx, sonarr); err != nil {
-				r.log.Error(err, "failed to remove finalizer from sonarr")
-				return err
-			}
-		}
-		return nil
-	}
-
 	if err := r.createOrUpdateObjects(r.ctx, r.log, sonarr); err != nil {
 		return err
 	}

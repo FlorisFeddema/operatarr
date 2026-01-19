@@ -27,7 +27,6 @@ import (
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -134,40 +133,33 @@ func (r *mediaLibraryReconcile) loadDesiredState() error {
 func (r *mediaLibraryReconcile) preconcile() error {
 	// Check if there is a finalizer present, if not, add it
 	if !controllerutil.ContainsFinalizer(&r.object, finalizerName) {
-		r.log.Info("adding finalizer to MediaLibrary")
 		if ok := controllerutil.AddFinalizer(&r.object, finalizerName); !ok {
-			return errors.New("unable to add finalizer to MediaLibrary")
+			return errors.New("unable to add finalizer")
 		}
 		if err := r.Update(r.ctx, &r.object); err != nil {
-			r.log.Error(err, "failed to update sonarr with finalizer")
+			r.log.Error(err, "failed to update with finalizer")
 			return err
 		}
-		//TODO: maybe update object status to reflect finalizer addition or stop reconcile with status requeue
-		//TODO: this might cause failures at the moment
+		//TODO: add return status object
 		return nil
 	}
 
 	//Check if the resource is being deleted
-	if !r.object.GetDeletionTimestamp().IsZero()  {
+	if !r.object.GetDeletionTimestamp().IsZero() {
 		if controllerutil.ContainsFinalizer(&r.object, finalizerName) {
-			r.log.Info("performing finalization for sonarr before deletion")
-			meta.SetStatusCondition(&r.object.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionUnknown, Reason: "Finalizing", Message: fmt.Sprintf("Finalizing %s before deletion", sonarr.Name)})
-
-			if err := r.Status().Update(r.ctx, &r.object); err != nil {
-				r.log.Error(err, "failed to update sonarr status")
-				return err
-			}
+			r.log.Info("performing finalization before deletion")
 
 			// TODO: perform finalization
 
-			if err := r.Get(r.ctx, r.object, sonarr); err != nil {
-				r.log.Error(err, "failed to re-fetch sonarr")
-				return err
+			// Remove finalizer when done
+			if ok := controllerutil.RemoveFinalizer(&r.object, finalizerName); !ok {
+				return errors.New("unable to remove finalizer")
 			}
-		return nil
+			//TODO: add return status object
+			return nil
+		}
+		return errors.New("deletion requested but finalizer not found")
 	}
-
-
 	return nil
 }
 
