@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,7 +54,7 @@ type sonarrReconcile struct {
 
 	ctx    context.Context
 	log    logr.Logger
-	object client.ObjectKey
+	object feddemadevv1alpha1.Sonarr
 }
 
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
@@ -85,7 +86,8 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	reconcileHandler.SonarrReconciler = *r
 	reconcileHandler.ctx = ctx
 	reconcileHandler.log = log
-	reconcileHandler.object = client.ObjectKey{Name: req.Name, Namespace: req.Namespace}
+	reconcileHandler.object.Name = req.Name
+	reconcileHandler.object.Namespace = req.Namespace
 
 	err := reconcileHandler.reconcile()
 	if err != nil {
@@ -97,40 +99,46 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 
 func (r *sonarrReconcile) reconcile() error {
-
-	sonarr := &feddemadevv1alpha1.Sonarr{}
-
-	if err := r.Get(r.ctx, r.object, sonarr); err != nil {
-		if apierrors.IsNotFound(err) {
-			r.log.Info("sonarr instance not found. Ignoring since object must be deleted")
-			return nil
-		}
-
-		r.log.Error(err, "unable to fetch sonarr")
+	// Load the object desired state based on resource, operator config and default values.
+	if err := r.loadDesiredState(); err != nil {
 		return err
 	}
 
-	if len(sonarr.Status.Conditions) == 0 {
-		meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionUnknown, Reason: "Reconciliation", Message: "Starting reconciliation"})
-
-		if err := r.Status().Update(r.ctx, sonarr); err != nil {
-			r.log.Error(err, "unable to update Sonarr status")
-			return err
-		}
-		return nil
+	// Preconcile step to handle deletion of resources
+	if err := r.preconcile(); err != nil {
+		return err
 	}
 
-	if !controllerutil.ContainsFinalizer(sonarr, finalizerName) {
-		r.log.Info("adding finalizer to sonarr")
-		if ok := controllerutil.AddFinalizer(sonarr, finalizerName); !ok {
-			return errors.New("unable to add finalizer to sonarr")
-		}
-		if err := r.Update(r.ctx, sonarr); err != nil {
-			r.log.Error(err, "failed to update sonarr with finalizer")
+	r.log.Info("Running Sonarr reconcilers")
+	reconcilers := []func() error{
+		//TODO: Add reconcilers here
+	}
+	err := utils.RunConcurrently(reconcilers...)
+	//TODO: change this to aggregate errors/condition updates
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *sonarrReconcile) loadDesiredState() error {
+	if err := r.Get(r.ctx, client.ObjectKeyFromObject(&r.object), &r.object); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			r.log.Error(err, "unable to fetch Sonarr")
 			return err
 		}
-		return nil
+		// Resource not found, could have been deleted before the reconcile request.
+		return fmt.Errorf("sonarr resource not found. Ignoring since object must be deleted")
 	}
+	r.log.Info("Desired state loaded")
+	return nil
+}
+
+func (r *sonarrReconcile) preconcile() error {
+
+}
+
+func (r *sonarrReconcile) oldreconcile() error {
 
 	if sonarr.GetDeletionTimestamp() != nil {
 		if controllerutil.ContainsFinalizer(sonarr, finalizerName) {
@@ -243,7 +251,7 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 					Tolerations:               sonarr.Spec.PodSpec.Tolerations,
 					TopologySpreadConstraints: sonarr.Spec.PodSpec.TopologySpreadConstraints,
 					NodeName:                  sonarr.Spec.PodSpec.NodeName,
-					//TODO: Set user/group/fs IDs from media library spec
+					//TODO: Set user/group/fs IDs from media object spec
 					SecurityContext:  sonarr.Spec.PodSpec.SecurityContext,
 					ImagePullSecrets: sonarr.Spec.PodSpec.ImagePullSecrets,
 					Containers: []corev1.Container{
@@ -287,11 +295,11 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 								},
 								{
 									Name:  "PUID",
-									Value: "", //TODO: get from media library spec
+									Value: "", //TODO: get from media object spec
 								},
 								{
 									Name:  "PGID",
-									Value: "", //TODO: get from media library spec
+									Value: "", //TODO: get from media object spec
 								},
 							},
 							Resources:       sonarr.Spec.PodSpec.Resources,
