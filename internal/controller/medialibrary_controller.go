@@ -101,7 +101,7 @@ func (r *mediaLibraryReconcile) reconcile() error {
 	}
 
 	// Preconcile step to handle deletion of resources
-	if err := r.preconcile(); err != nil {
+	if s, err := r.preconcile(); err != nil || s {
 		return err
 	}
 
@@ -130,18 +130,19 @@ func (r *mediaLibraryReconcile) loadDesiredState() error {
 	return nil
 }
 
-func (r *mediaLibraryReconcile) preconcile() error {
+// preconcile handles finalizers and deletion logic
+// Returns true if reconciliation should stop
+func (r *mediaLibraryReconcile) preconcile() (bool, error) {
 	// Check if there is a finalizer present, if not, add it
 	if !controllerutil.ContainsFinalizer(&r.object, finalizerName) {
 		if ok := controllerutil.AddFinalizer(&r.object, finalizerName); !ok {
-			return errors.New("unable to add finalizer")
+			return true, errors.New("unable to add finalizer")
 		}
 		if err := r.Update(r.ctx, &r.object); err != nil {
 			r.log.Error(err, "failed to update with finalizer")
-			return err
+			return true, err
 		}
-		//TODO: add return status object
-		return nil
+		return true, nil
 	}
 
 	//Check if the resource is being deleted
@@ -153,14 +154,14 @@ func (r *mediaLibraryReconcile) preconcile() error {
 
 			// Remove finalizer when done
 			if ok := controllerutil.RemoveFinalizer(&r.object, finalizerName); !ok {
-				return errors.New("unable to remove finalizer")
+				return true, errors.New("unable to remove finalizer")
 			}
 			//TODO: add return status object
-			return nil
+			return true, nil
 		}
-		return errors.New("deletion requested but finalizer not found")
+		return true, errors.New("deletion requested but finalizer not found")
 	}
-	return nil
+	return false, nil
 }
 
 func (r *mediaLibraryReconcile) reconcileMainPvc() error {
