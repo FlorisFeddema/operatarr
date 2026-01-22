@@ -105,7 +105,7 @@ func (r *sonarrReconcile) reconcile() error {
 	}
 
 	// Preconcile step to handle deletion of resources
-	if err := r.preconcile(); err != nil {
+	if s, err := r.preconcile(); err != nil || s {
 		return err
 	}
 
@@ -134,8 +134,37 @@ func (r *sonarrReconcile) loadDesiredState() error {
 	return nil
 }
 
-func (r *sonarrReconcile) preconcile() error {
+// preconcile handles finalizers and deletion logic
+// Returns true if reconciliation should stop
+func (r *sonarrReconcile) preconcile() (bool, error) {
+	// Check if there is a finalizer present, if not, add it
+	if !controllerutil.ContainsFinalizer(&r.object, finalizerName) {
+		if ok := controllerutil.AddFinalizer(&r.object, finalizerName); !ok {
+			return true, errors.New("unable to add finalizer to sonarr")
+		}
+		if err := r.Update(r.ctx, &r.object); err != nil {
+			r.log.Error(err, "failed to update with finalizer")
+			return true, err
+		}
+		return true, nil
+	}
 
+	//Check if the resource is being deleted
+	if !r.object.GetDeletionTimestamp().IsZero() {
+		if controllerutil.ContainsFinalizer(&r.object, finalizerName) {
+			r.log.Info("performing finalization before deletion of sonarr")
+
+			// TODO: perform finalization
+
+			// Remove finalizer when done
+			if ok := controllerutil.RemoveFinalizer(&r.object, finalizerName); !ok {
+				return true, errors.New("unable to remove finalizer")
+			}
+			return true, nil
+		}
+		return true, errors.New("deletion requested but finalizer not found")
+	}
+	return false, nil
 }
 
 func (r *sonarrReconcile) oldreconcile() error {
