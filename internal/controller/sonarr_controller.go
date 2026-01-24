@@ -20,12 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -52,9 +51,10 @@ type SonarrReconciler struct {
 type sonarrReconcile struct {
 	SonarrReconciler
 
-	ctx    context.Context
-	log    logr.Logger
-	object feddemadevv1alpha1.Sonarr
+	ctx          context.Context
+	log          logr.Logger
+	object       feddemadevv1alpha1.Sonarr
+	mediaLibrary *feddemadevv1alpha1.MediaLibrary
 }
 
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
@@ -110,8 +110,11 @@ func (r *sonarrReconcile) reconcile() error {
 	}
 
 	r.log.Info("Running Sonarr reconcilers")
+	//TODO: add step to create media volume based on MediaLibrary
 	reconcilers := []func() error{
-		//TODO: Add reconcilers here
+		r.reconcileStatefulSet,
+		r.reconcileHeadlessService,
+		r.reconcileService,
 	}
 	err := utils.RunConcurrently(reconcilers...)
 	//TODO: change this to aggregate errors/condition updates
@@ -121,6 +124,7 @@ func (r *sonarrReconcile) reconcile() error {
 	return nil
 }
 
+// loadDesiredState loads the desired state of the Sonarr resource
 func (r *sonarrReconcile) loadDesiredState() error {
 	if err := r.Get(r.ctx, client.ObjectKeyFromObject(&r.object), &r.object); err != nil {
 		if client.IgnoreNotFound(err) != nil {
@@ -130,6 +134,15 @@ func (r *sonarrReconcile) loadDesiredState() error {
 		// Resource not found, could have been deleted before the reconcile request.
 		return fmt.Errorf("sonarr resource not found. Ignoring since object must be deleted")
 	}
+
+	// Get MediaLibrary referenced by Sonarr
+	mediaLibrary, err := getMediaLibraryFromRef(r.ctx, r.Client, r.object.Spec.MediaLibraryRef)
+	if err != nil {
+		r.log.Error(err, "unable to get MediaLibrary from reference", "MediaLibraryRef", r.object.Spec.MediaLibraryRef)
+		return err
+	}
+	r.mediaLibrary = mediaLibrary
+
 	r.log.Info("Desired state loaded")
 	return nil
 }
@@ -167,88 +180,53 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 	return false, nil
 }
 
-func (r *sonarrReconcile) oldreconcile() error {
-	if err := r.createOrUpdateObjects(r.ctx, r.log, sonarr); err != nil {
-		return err
-	}
+func (r *sonarrReconcile) reconcileStatefulSet() error {
+	r.log.Info("Creating or patching StatefulSet")
+	ss := &appsv1.StatefulSet{}
+	ss.Name = r.object.Name
+	ss.Namespace = r.object.Namespace
 
-	// TODO: create the other resources for the Sonarr object
-	// TODO: like service, headless-service, ingress/route
-
-	//err := r.ensureStatefulSet(ctx, log, sonarr)
-	//if err != nil {
-	//	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded})
-	//}
-	//
-	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionTrue, Message: "Ready", Reason: "Ready"})
-	meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeDegraded, Status: metav1.ConditionFalse, Message: "Healthy", Reason: "Healthy"})
-	if err := r.Status().Update(r.ctx, sonarr); err != nil {
-		r.log.Error(err, "unable to update sonarr status")
-		return err
-	}
-
-	r.log.Info("sonarr is ready")
-	return nil
-}
-
-func (r *SonarrReconciler) createOrUpdateObjects(ctx context.Context, log logr.Logger, sonarr *feddemadevv1alpha1.Sonarr) error {
-	//TODO: Create this function
-	found := &appsv1.StatefulSet{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: sonarr.Namespace, Name: sonarr.Name}, found)
-	if err != nil && apierrors.IsNotFound(err) {
-		ss, err := r.statefulSetForSonarr(sonarr)
-		if err != nil {
-			log.Error(err, "failed to generate StatefulSet for sonarr")
-			meta.SetStatusCondition(&sonarr.Status.Conditions, metav1.Condition{Type: typeAvailable, Status: metav1.ConditionFalse, Reason: "Reconciliation", Message: "Failed to generate StatefulSet"})
-			return err
+	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, ss, func() error {
+		if err := ctrl.SetControllerReference(&r.object, ss, r.Scheme); err != nil {
+			return errors.Join(err, errors.New("unable to set controller reference for StatefulSet"))
 		}
 
-		log.Info("creating a new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
-		if err = r.Create(ctx, ss); err != nil {
-			log.Error(err, "failed to create new StatefulSet", "StatefulSet.Namespace", ss.Namespace, "StatefulSet.Name", ss.Name)
-			return err
-		}
+		ss.SetLabels(mergeMap(ss.GetLabels(), labelsForSonarr(r.object.Name)))
 
-		// StatefulSet created successfully - continue with the reconciliation
-	}
-	return nil
-}
-
-func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonarr) (*appsv1.StatefulSet, error) {
-	labels := labelsForSonarr(sonarr.Name)
-
-	statefulset := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      sonarr.Name,
-			Namespace: sonarr.Namespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.StatefulSetSpec{
+		ss.Spec = appsv1.StatefulSetSpec{
 			Replicas:             ptr.To(int32(1)),
-			RevisionHistoryLimit: ptr.To(int32(1)),
+			RevisionHistoryLimit: ptr.To(int32(0)),
 
-			ServiceName: fmt.Sprintf("%s-headless", sonarr.Name),
+			ServiceName: getHeadlessServiceName(r.object.Name),
 			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
+				MatchLabels: labelsForSonarr(r.object.Name),
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels: labelsForSonarr(r.object.Name),
 				},
 				Spec: corev1.PodSpec{
-					Affinity:                  sonarr.Spec.PodSpec.Affinity,
-					NodeSelector:              sonarr.Spec.PodSpec.NodeSelector,
-					Tolerations:               sonarr.Spec.PodSpec.Tolerations,
-					TopologySpreadConstraints: sonarr.Spec.PodSpec.TopologySpreadConstraints,
-					NodeName:                  sonarr.Spec.PodSpec.NodeName,
-					//TODO: Set user/group/fs IDs from media object spec
-					SecurityContext:  sonarr.Spec.PodSpec.SecurityContext,
-					ImagePullSecrets: sonarr.Spec.PodSpec.ImagePullSecrets,
+					Affinity:                  r.object.Spec.PodSpec.Affinity,
+					NodeSelector:              r.object.Spec.PodSpec.NodeSelector,
+					Tolerations:               r.object.Spec.PodSpec.Tolerations,
+					TopologySpreadConstraints: r.object.Spec.PodSpec.TopologySpreadConstraints,
+					NodeName:                  r.object.Spec.PodSpec.NodeName,
+					SecurityContext: &corev1.PodSecurityContext{
+						SELinuxOptions:     r.object.Spec.PodSpec.SecurityContext.SELinuxOptions,
+						SeccompProfile:     r.object.Spec.PodSpec.SecurityContext.SeccompProfile,
+						AppArmorProfile:    r.object.Spec.PodSpec.SecurityContext.AppArmorProfile,
+						RunAsNonRoot:       ptr.To(true),
+						RunAsUser:          r.mediaLibrary.Spec.Permissions.RunAsUser,
+						RunAsGroup:         r.mediaLibrary.Spec.Permissions.RunAsGroup,
+						FSGroup:            r.mediaLibrary.Spec.Permissions.FSGroup,
+						SupplementalGroups: r.mediaLibrary.Spec.Permissions.SupplementalGroups,
+					},
+					ImagePullSecrets: r.object.Spec.PodSpec.ImagePullSecrets,
 					Containers: []corev1.Container{
 						{
 							Name:            "sonarr",
-							Image:           sonarr.Spec.PodSpec.Image,
-							ImagePullPolicy: sonarr.Spec.PodSpec.ImagePullPolicy,
+							Image:           r.object.Spec.PodSpec.Image,
+							ImagePullPolicy: r.object.Spec.PodSpec.ImagePullPolicy,
 							Ports: []corev1.ContainerPort{{
 								ContainerPort: 8989,
 								Name:          "http",
@@ -285,15 +263,22 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 								},
 								{
 									Name:  "PUID",
-									Value: "", //TODO: get from media object spec
+									Value: strconv.FormatInt(*r.mediaLibrary.Spec.Permissions.RunAsUser, 10),
 								},
 								{
 									Name:  "PGID",
-									Value: "", //TODO: get from media object spec
+									Value: strconv.FormatInt(*r.mediaLibrary.Spec.Permissions.RunAsGroup, 10),
 								},
 							},
-							Resources:       sonarr.Spec.PodSpec.Resources,
-							SecurityContext: sonarr.Spec.PodSpec.ContainerSecurityContext,
+							Resources: r.object.Spec.PodSpec.Resources,
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								Privileged:               ptr.To(false),
+								ReadOnlyRootFilesystem:   ptr.To(true),
+								AllowPrivilegeEscalation: ptr.To(false),
+							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "config",
@@ -326,31 +311,38 @@ func (r *SonarrReconciler) statefulSetForSonarr(sonarr *feddemadevv1alpha1.Sonar
 						Name: "config",
 					},
 					Spec: corev1.PersistentVolumeClaimSpec{
-						AccessModes:      sonarr.Spec.PodSpec.ConfigVolumeSpec.AccessModes,
-						Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: sonarr.Spec.PodSpec.ConfigVolumeSpec.Size}},
-						StorageClassName: sonarr.Spec.PodSpec.ConfigVolumeSpec.StorageClassName,
+						AccessModes:      r.object.Spec.PodSpec.ConfigVolumeSpec.AccessModes,
+						Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: r.object.Spec.PodSpec.ConfigVolumeSpec.Size}},
+						StorageClassName: r.object.Spec.PodSpec.ConfigVolumeSpec.StorageClassName,
 					},
 				},
 			},
-		},
+		}
+		return nil
+	})
+	if err != nil {
+		return errors.Join(err, fmt.Errorf("unable to create StatefulSet with status %s", opResult))
 	}
 
-	if err := ctrl.SetControllerReference(sonarr, statefulset, r.Scheme); err != nil {
-		return nil, err
-	}
-	return statefulset, nil
+	//TODO: return status to aggregate errors/condition updates
+	return nil
 }
 
-func (r *SonarrReconciler) serviceForSonarr(sonarr *feddemadevv1alpha1.Sonarr) (*corev1.Service, error) {
-	labels := labelsForSonarr(sonarr.Name)
+func (r *sonarrReconcile) reconcileService() error {
+	r.log.Info("Creating or patching Service")
+	svc := &corev1.Service{}
+	svc.Name = r.object.Name
+	svc.Namespace = r.object.Namespace
 
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      sonarr.Name,
-			Namespace: sonarr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
+	labels := labelsForSonarr(r.object.Name)
+
+	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, svc, func() error {
+		if err := ctrl.SetControllerReference(&r.object, svc, r.Scheme); err != nil {
+			return errors.Join(err, errors.New("unable to set controller owner reference for Service"))
+		}
+
+		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
+		svc.Spec = corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       8989,
@@ -359,13 +351,52 @@ func (r *SonarrReconciler) serviceForSonarr(sonarr *feddemadevv1alpha1.Sonarr) (
 			}},
 			Selector: labels,
 			Type:     corev1.ServiceTypeClusterIP,
-		},
+		}
+
+		return nil
+	})
+	if err != nil {
+		return errors.Join(err, fmt.Errorf("unable to create or patch Service with status %s", opResult))
 	}
 
-	if err := ctrl.SetControllerReference(sonarr, service, r.Scheme); err != nil {
-		return nil, err
+	//TODO: return status to aggregate errors/condition updates
+	return nil
+}
+
+func (r *sonarrReconcile) reconcileHeadlessService() error {
+	r.log.Info("Creating or patching Headless Service")
+	svc := &corev1.Service{}
+	svc.Name = getHeadlessServiceName(r.object.Name)
+	svc.Namespace = r.object.Namespace
+
+	labels := labelsForSonarr(r.object.Name)
+
+	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, svc, func() error {
+		if err := ctrl.SetControllerReference(&r.object, svc, r.Scheme); err != nil {
+			return errors.Join(err, errors.New("unable to set controller owner reference for Headless Service"))
+		}
+
+		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
+		svc.Spec = corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{
+				Name:       "http",
+				Port:       8989,
+				TargetPort: intstr.FromInt32(8989),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+			Selector:  labels,
+			ClusterIP: corev1.ClusterIPNone,
+			Type:      corev1.ServiceTypeClusterIP,
+		}
+
+		return nil
+	})
+	if err != nil {
+		return errors.Join(err, fmt.Errorf("unable to create or patch Headless Service with status %s", opResult))
 	}
-	return service, nil
+
+	//TODO: return status to aggregate errors/condition updates
+	return nil
 }
 
 func labelsForSonarr(name string) map[string]string {
@@ -373,4 +404,8 @@ func labelsForSonarr(name string) map[string]string {
 		"app.kubernetes.io/name":       name,
 		"app.kubernetes.io/managed-by": "operatarr",
 	}
+}
+
+func getHeadlessServiceName(name string) string {
+	return fmt.Sprintf("%s-headless", name)
 }

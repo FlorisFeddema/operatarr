@@ -120,7 +120,6 @@ func (r *mediaLibraryReconcile) loadDesiredState() error {
 	if err := r.Get(r.ctx, client.ObjectKeyFromObject(&r.object), &r.object); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			r.log.Error(err, "unable to fetch MediaLibrary")
-			r.log.Error(err, "unable to fetch MediaLibrary")
 			return err
 		}
 		// Resource not found, could have been deleted before the reconcile request.
@@ -243,7 +242,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{"storage": r.object.Spec.PVC.Size}},
 			StorageClassName: storageClass,
 		}
-		pvc.Annotations = mergeMap(pvc.Annotations, r.object.Spec.PVC.Annotations)
+		pvc.Annotations = mergeMap(pvc.GetAnnotations(), r.object.Spec.PVC.Annotations)
 
 		return nil
 	})
