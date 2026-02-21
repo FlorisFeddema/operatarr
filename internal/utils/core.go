@@ -1,9 +1,16 @@
 package utils
 
-import "sync"
+import (
+	"sync"
 
-func RunConcurrently(fnList ...func() error) chan error {
-	errors := make(chan error)
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+import "errors"
+
+// RunConcurrently runs a list of functions concurrently and returns a channel with their errors
+func RunConcurrently(fnList ...func() error) error {
+	errorList := make(chan error)
 	wg := sync.WaitGroup{}
 
 	// Run all the functions concurrently
@@ -12,25 +19,52 @@ func RunConcurrently(fnList ...func() error) chan error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errors <- fn()
+			errorList <- fn()
 		}()
 	}
 
-	// Close the output channel whenever all of the functions completed
+	// Close the output channel whenever all the functions completed
 	go func() {
 		wg.Wait()
-		close(errors)
+		close(errorList)
 	}()
 
-	// Read from the channel and aggregate into a slice
-	return errors
+	// Collect all the errors and return them as a single error
+	if err := errors.Join(channelToSlice(errorList)...); err != nil {
+		return err
+	}
+	return nil
 }
 
-// ChannelToSlice consumes a channel return values in a slice
-func ChannelToSlice[T any](c chan T) []T {
-	list := []T{}
+func channelToSlice[T any](c chan T) []T {
+	var list []T
 	for value := range c {
 		list = append(list, value)
 	}
 	return list
+}
+
+func MergeConditions(i *[]metav1.Condition, cond metav1.Condition) {
+	existingConditions := *i
+	now := metav1.Now()
+	cond.LastTransitionTime = now
+
+	for idx, c := range existingConditions {
+		if c.Type == cond.Type {
+			// Only update the condition if the status has changed
+			if c.Status != cond.Status {
+				existingConditions[idx] = cond
+			}
+			return
+		}
+	}
+	*i = append(existingConditions, cond)
+}
+
+func MustParseResource(s string) resource.Quantity {
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		panic(err)
+	}
+	return q
 }

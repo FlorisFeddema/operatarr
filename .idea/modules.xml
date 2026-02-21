@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/yasp.iml" filepath="$PROJECT_DIR$/.idea/yasp.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/operatarr.iml" filepath="$PROJECT_DIR$/.idea/operatarr.iml" />
     </modules>
   </component>
 </project>

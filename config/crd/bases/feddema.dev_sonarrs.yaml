@@ -39,203 +39,210 @@ spec:
           spec:
             description: SonarrSpec defines the desired state of Sonarr
             properties:
+              mediaLibraryRef:
+                description: ObjectReference contains enough information to let you
+                  inspect or modify the referred object.
+                properties:
+                  apiVersion:
+                    description: API version of the referent.
+                    type: string
+                  fieldPath:
+                    description: |-
+                      If referring to a piece of an object instead of an entire object, this string
+                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
+                      For example, if the object reference is to a container within a pod, this would take on a value like:
+                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
+                      the event) or if no container name is specified "spec.containers[2]" (container with
+                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
+                      referencing a part of an object.
+                    type: string
+                  kind:
+                    description: |-
+                      Kind of the referent.
+                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+                    type: string
+                  name:
+                    description: |-
+                      Name of the referent.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referent.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
+                    type: string
+                  resourceVersion:
+                    description: |-
+                      Specific resourceVersion to which this reference is made, if any.
+                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
+                    type: string
+                  uid:
+                    description: |-
+                      UID of the referent.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: mediaLibraryRef.kind must be 'MediaLibrary'
+                  rule: self.kind == 'MediaLibrary'
+              sonarrHttpRouteSpec:
+                properties:
+                  hostname:
+                    type: string
+                  parentRef:
+                    description: |-
+                      ParentReference identifies an API object (usually a Gateway) that can be considered
+                      a parent of this resource (usually a route). There are two kinds of parent resources
+                      with "Core" support:
+
+                      * Gateway (Gateway conformance profile)
+                      * Service (Mesh conformance profile, ClusterIP Services only)
+
+                      This API may be extended in the future to support additional kinds of parent
+                      resources.
+
+                      The API object must be valid in the cluster; the Group and Kind must
+                      be registered in the cluster for this reference to be valid.
+                    properties:
+                      group:
+                        default: gateway.networking.k8s.io
+                        description: |-
+                          Group is the group of the referent.
+                          When unspecified, "gateway.networking.k8s.io" is inferred.
+                          To set the core API group (such as for a "Service" kind referent),
+                          Group must be explicitly set to "" (empty string).
+
+                          Support: Core
+                        maxLength: 253
+                        pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      kind:
+                        default: Gateway
+                        description: |-
+                          Kind is kind of the referent.
+
+                          There are two kinds of parent resources with "Core" support:
+
+                          * Gateway (Gateway conformance profile)
+                          * Service (Mesh conformance profile, ClusterIP Services only)
+
+                          Support for other resources is Implementation-Specific.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                        type: string
+                      name:
+                        description: |-
+                          Name is the name of the referent.
+
+                          Support: Core
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the namespace of the referent. When unspecified, this refers
+                          to the local namespace of the Route.
+
+                          Note that there are specific rules for ParentRefs which cross namespace
+                          boundaries. Cross-namespace references are only valid if they are explicitly
+                          allowed by something in the namespace they are referring to. For example:
+                          Gateway has the AllowedRoutes field, and ReferenceGrant provides a
+                          generic way to enable any other kind of cross-namespace reference.
+
+                          <gateway:experimental:description>
+                          ParentRefs from a Route to a Service in the same namespace are "producer"
+                          routes, which apply default routing rules to inbound connections from
+                          any namespace to the Service.
+
+                          ParentRefs from a Route to a Service in a different namespace are
+                          "consumer" routes, and these routing rules are only applied to outbound
+                          connections originating from the same namespace as the Route, for which
+                          the intended destination of the connections are a Service targeted as a
+                          ParentRef of the Route.
+                          </gateway:experimental:description>
+
+                          Support: Core
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                        type: string
+                      port:
+                        description: |-
+                          Port is the network port this Route targets. It can be interpreted
+                          differently based on the type of parent resource.
+
+                          When the parent resource is a Gateway, this targets all listeners
+                          listening on the specified port that also support this kind of Route(and
+                          select this Route). It's not recommended to set `Port` unless the
+                          networking behaviors specified in a Route must apply to a specific port
+                          as opposed to a listener(s) whose port(s) may be changed. When both Port
+                          and SectionName are specified, the name and port of the selected listener
+                          must match both specified values.
+
+                          <gateway:experimental:description>
+                          When the parent resource is a Service, this targets a specific port in the
+                          Service spec. When both Port (experimental) and SectionName are specified,
+                          the name and port of the selected port must match both specified values.
+                          </gateway:experimental:description>
+
+                          Implementations MAY choose to support other parent resources.
+                          Implementations supporting other types of parent resources MUST clearly
+                          document how/if Port is interpreted.
+
+                          For the purpose of status, an attachment is considered successful as
+                          long as the parent resource accepts it partially. For example, Gateway
+                          listeners can restrict which Routes can attach to them by Route kind,
+                          namespace, or hostname. If 1 of 2 Gateway listeners accept attachment
+                          from the referencing Route, the Route MUST be considered successfully
+                          attached. If no Gateway listeners accept attachment from this Route,
+                          the Route MUST be considered detached from the Gateway.
+
+                          Support: Extended
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      sectionName:
+                        description: |-
+                          SectionName is the name of a section within the target resource. In the
+                          following resources, SectionName is interpreted as the following:
+
+                          * Gateway: Listener name. When both Port (experimental) and SectionName
+                          are specified, the name and port of the selected listener must match
+                          both specified values.
+                          * Service: Port name. When both Port (experimental) and SectionName
+                          are specified, the name and port of the selected listener must match
+                          both specified values.
+
+                          Implementations MAY choose to support attaching Routes to other resources.
+                          If that is the case, they MUST clearly document how SectionName is
+                          interpreted.
+
+                          When unspecified (empty string), this will reference the entire resource.
+                          For the purpose of status, an attachment is considered successful if at
+                          least one section in the parent resource accepts it. For example, Gateway
+                          listeners can restrict which Routes can attach to them by Route kind,
+                          namespace, or hostname. If 1 of 2 Gateway listeners accept attachment from
+                          the referencing Route, the Route MUST be considered successfully
+                          attached. If no Gateway listeners accept attachment from this Route, the
+                          Route MUST be considered detached from the Gateway.
+
+                          Support: Core
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - hostname
+                - parentRef
+                type: object
               sonarrPodTemplateSpec:
                 properties:
-                  ContainerSecurityContext:
-                    description: |-
-                      SecurityContext holds security configuration that will be applied to a container.
-                      Some fields are present in both SecurityContext and PodSecurityContext.  When both
-                      are set, the values in SecurityContext take precedence.
-                    properties:
-                      allowPrivilegeEscalation:
-                        description: |-
-                          AllowPrivilegeEscalation controls whether a process can gain more
-                          privileges than its parent process. This bool directly controls if
-                          the no_new_privs flag will be set on the container process.
-                          AllowPrivilegeEscalation is true always when the container is:
-                          1) run as Privileged
-                          2) has CAP_SYS_ADMIN
-                          Note that this field cannot be set when spec.os.name is windows.
-                        type: boolean
-                      appArmorProfile:
-                        description: |-
-                          appArmorProfile is the AppArmor options to use by this container. If set, this profile
-                          overrides the pod's appArmorProfile.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        properties:
-                          localhostProfile:
-                            description: |-
-                              localhostProfile indicates a profile loaded on the node that should be used.
-                              The profile must be preconfigured on the node to work.
-                              Must match the loaded name of the profile.
-                              Must be set if and only if type is "Localhost".
-                            type: string
-                          type:
-                            description: |-
-                              type indicates which kind of AppArmor profile will be applied.
-                              Valid options are:
-                                Localhost - a profile pre-loaded on the node.
-                                RuntimeDefault - the container runtime's default profile.
-                                Unconfined - no AppArmor enforcement.
-                            type: string
-                        required:
-                        - type
-                        type: object
-                      capabilities:
-                        description: |-
-                          The capabilities to add/drop when running containers.
-                          Defaults to the default set of capabilities granted by the container runtime.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        properties:
-                          add:
-                            description: Added capabilities
-                            items:
-                              description: Capability represent POSIX capabilities
-                                type
-                              type: string
-                            type: array
-                            x-kubernetes-list-type: atomic
-                          drop:
-                            description: Removed capabilities
-                            items:
-                              description: Capability represent POSIX capabilities
-                                type
-                              type: string
-                            type: array
-                            x-kubernetes-list-type: atomic
-                        type: object
-                      privileged:
-                        description: |-
-                          Run container in privileged mode.
-                          Processes in privileged containers are essentially equivalent to root on the host.
-                          Defaults to false.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        type: boolean
-                      procMount:
-                        description: |-
-                          procMount denotes the type of proc mount to use for the containers.
-                          The default value is Default which uses the container runtime defaults for
-                          readonly paths and masked paths.
-                          This requires the ProcMountType feature flag to be enabled.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        type: string
-                      readOnlyRootFilesystem:
-                        description: |-
-                          Whether this container has a read-only root filesystem.
-                          Default is false.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        type: boolean
-                      runAsGroup:
-                        description: |-
-                          The GID to run the entrypoint of the container process.
-                          Uses runtime default if unset.
-                          May also be set in PodSecurityContext.  If set in both SecurityContext and
-                          PodSecurityContext, the value specified in SecurityContext takes precedence.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        format: int64
-                        type: integer
-                      runAsNonRoot:
-                        description: |-
-                          Indicates that the container must run as a non-root user.
-                          If true, the Kubelet will validate the image at runtime to ensure that it
-                          does not run as UID 0 (root) and fail to start the container if it does.
-                          If unset or false, no such validation will be performed.
-                          May also be set in PodSecurityContext.  If set in both SecurityContext and
-                          PodSecurityContext, the value specified in SecurityContext takes precedence.
-                        type: boolean
-                      runAsUser:
-                        description: |-
-                          The UID to run the entrypoint of the container process.
-                          Defaults to user specified in image metadata if unspecified.
-                          May also be set in PodSecurityContext.  If set in both SecurityContext and
-                          PodSecurityContext, the value specified in SecurityContext takes precedence.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        format: int64
-                        type: integer
-                      seLinuxOptions:
-                        description: |-
-                          The SELinux context to be applied to the container.
-                          If unspecified, the container runtime will allocate a random SELinux context for each
-                          container.  May also be set in PodSecurityContext.  If set in both SecurityContext and
-                          PodSecurityContext, the value specified in SecurityContext takes precedence.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        properties:
-                          level:
-                            description: Level is SELinux level label that applies
-                              to the container.
-                            type: string
-                          role:
-                            description: Role is a SELinux role label that applies
-                              to the container.
-                            type: string
-                          type:
-                            description: Type is a SELinux type label that applies
-                              to the container.
-                            type: string
-                          user:
-                            description: User is a SELinux user label that applies
-                              to the container.
-                            type: string
-                        type: object
-                      seccompProfile:
-                        description: |-
-                          The seccomp options to use by this container. If seccomp options are
-                          provided at both the pod & container level, the container options
-                          override the pod options.
-                          Note that this field cannot be set when spec.os.name is windows.
-                        properties:
-                          localhostProfile:
-                            description: |-
-                              localhostProfile indicates a profile defined in a file on the node should be used.
-                              The profile must be preconfigured on the node to work.
-                              Must be a descending path, relative to the kubelet's configured seccomp profile location.
-                              Must be set if type is "Localhost". Must NOT be set for any other type.
-                            type: string
-                          type:
-                            description: |-
-                              type indicates which kind of seccomp profile will be applied.
-                              Valid options are:
-
-                              Localhost - a profile defined in a file on the node should be used.
-                              RuntimeDefault - the container runtime default profile should be used.
-                              Unconfined - no profile should be applied.
-                            type: string
-                        required:
-                        - type
-                        type: object
-                      windowsOptions:
-                        description: |-
-                          The Windows specific settings applied to all containers.
-                          If unspecified, the options from the PodSecurityContext will be used.
-                          If set in both SecurityContext and PodSecurityContext, the value specified in SecurityContext takes precedence.
-                          Note that this field cannot be set when spec.os.name is linux.
-                        properties:
-                          gmsaCredentialSpec:
-                            description: |-
-                              GMSACredentialSpec is where the GMSA admission webhook
-                              (https://github.com/kubernetes-sigs/windows-gmsa) inlines the contents of the
-                              GMSA credential spec named by the GMSACredentialSpecName field.
-                            type: string
-                          gmsaCredentialSpecName:
-                            description: GMSACredentialSpecName is the name of the
-                              GMSA credential spec to use.
-                            type: string
-                          hostProcess:
-                            description: |-
-                              HostProcess determines if a container should be run as a 'Host Process' container.
-                              All of a Pod's containers must have the same effective HostProcess value
-                              (it is not allowed to have a mix of HostProcess containers and non-HostProcess containers).
-                              In addition, if HostProcess is true then HostNetwork must also be set to true.
-                            type: boolean
-                          runAsUserName:
-                            description: |-
-                              The UserName in Windows to run the entrypoint of the container process.
-                              Defaults to the user specified in image metadata if unspecified.
-                              May also be set in PodSecurityContext. If set in both SecurityContext and
-                              PodSecurityContext, the value specified in SecurityContext takes precedence.
-                            type: string
-                        type: object
-                    type: object
                   affinity:
                     description: Affinity is a group of affinity scheduling rules.
                     properties:
@@ -809,8 +816,8 @@ spec:
                               most preferred is the one with the greatest sum of weights, i.e.
                               for each node that meets all of the scheduling requirements (resource
                               request, requiredDuringScheduling anti-affinity expressions, etc.),
-                              compute a sum by iterating through the elements of this field and adding
-                              "weight" to the sum if the node has pods which matches the corresponding podAffinityTerm; the
+                              compute a sum by iterating through the elements of this field and subtracting
+                              "weight" from the sum if the node has pods which matches the corresponding podAffinityTerm; the
                               node(s) with the highest sum are the most preferred.
                             items:
                               description: The weights of all of the matched WeightedPodAffinityTerm
@@ -1160,6 +1167,8 @@ spec:
                       StorageClassName:
                         type: string
                       accessModes:
+                        default:
+                        - ReadWriteOnce
                         items:
                           type: string
                         type: array
@@ -1170,8 +1179,202 @@ spec:
                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                         x-kubernetes-int-or-string: true
                     required:
-                    - accessModes
                     - resources
+                    type: object
+                  containerSecurityContext:
+                    description: |-
+                      SecurityContext holds security configuration that will be applied to a container.
+                      Some fields are present in both SecurityContext and PodSecurityContext.  When both
+                      are set, the values in SecurityContext take precedence.
+                    properties:
+                      allowPrivilegeEscalation:
+                        description: |-
+                          AllowPrivilegeEscalation controls whether a process can gain more
+                          privileges than its parent process. This bool directly controls if
+                          the no_new_privs flag will be set on the container process.
+                          AllowPrivilegeEscalation is true always when the container is:
+                          1) run as Privileged
+                          2) has CAP_SYS_ADMIN
+                          Note that this field cannot be set when spec.os.name is windows.
+                        type: boolean
+                      appArmorProfile:
+                        description: |-
+                          appArmorProfile is the AppArmor options to use by this container. If set, this profile
+                          overrides the pod's appArmorProfile.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        properties:
+                          localhostProfile:
+                            description: |-
+                              localhostProfile indicates a profile loaded on the node that should be used.
+                              The profile must be preconfigured on the node to work.
+                              Must match the loaded name of the profile.
+                              Must be set if and only if type is "Localhost".
+                            type: string
+                          type:
+                            description: |-
+                              type indicates which kind of AppArmor profile will be applied.
+                              Valid options are:
+                                Localhost - a profile pre-loaded on the node.
+                                RuntimeDefault - the container runtime's default profile.
+                                Unconfined - no AppArmor enforcement.
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      capabilities:
+                        description: |-
+                          The capabilities to add/drop when running containers.
+                          Defaults to the default set of capabilities granted by the container runtime.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        properties:
+                          add:
+                            description: Added capabilities
+                            items:
+                              description: Capability represent POSIX capabilities
+                                type
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          drop:
+                            description: Removed capabilities
+                            items:
+                              description: Capability represent POSIX capabilities
+                                type
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                      privileged:
+                        description: |-
+                          Run container in privileged mode.
+                          Processes in privileged containers are essentially equivalent to root on the host.
+                          Defaults to false.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        type: boolean
+                      procMount:
+                        description: |-
+                          procMount denotes the type of proc mount to use for the containers.
+                          The default value is Default which uses the container runtime defaults for
+                          readonly paths and masked paths.
+                          This requires the ProcMountType feature flag to be enabled.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        type: string
+                      readOnlyRootFilesystem:
+                        description: |-
+                          Whether this container has a read-only root filesystem.
+                          Default is false.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        type: boolean
+                      runAsGroup:
+                        description: |-
+                          The GID to run the entrypoint of the container process.
+                          Uses runtime default if unset.
+                          May also be set in PodSecurityContext.  If set in both SecurityContext and
+                          PodSecurityContext, the value specified in SecurityContext takes precedence.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        format: int64
+                        type: integer
+                      runAsNonRoot:
+                        description: |-
+                          Indicates that the container must run as a non-root user.
+                          If true, the Kubelet will validate the image at runtime to ensure that it
+                          does not run as UID 0 (root) and fail to start the container if it does.
+                          If unset or false, no such validation will be performed.
+                          May also be set in PodSecurityContext.  If set in both SecurityContext and
+                          PodSecurityContext, the value specified in SecurityContext takes precedence.
+                        type: boolean
+                      runAsUser:
+                        description: |-
+                          The UID to run the entrypoint of the container process.
+                          Defaults to user specified in image metadata if unspecified.
+                          May also be set in PodSecurityContext.  If set in both SecurityContext and
+                          PodSecurityContext, the value specified in SecurityContext takes precedence.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        format: int64
+                        type: integer
+                      seLinuxOptions:
+                        description: |-
+                          The SELinux context to be applied to the container.
+                          If unspecified, the container runtime will allocate a random SELinux context for each
+                          container.  May also be set in PodSecurityContext.  If set in both SecurityContext and
+                          PodSecurityContext, the value specified in SecurityContext takes precedence.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        properties:
+                          level:
+                            description: Level is SELinux level label that applies
+                              to the container.
+                            type: string
+                          role:
+                            description: Role is a SELinux role label that applies
+                              to the container.
+                            type: string
+                          type:
+                            description: Type is a SELinux type label that applies
+                              to the container.
+                            type: string
+                          user:
+                            description: User is a SELinux user label that applies
+                              to the container.
+                            type: string
+                        type: object
+                      seccompProfile:
+                        description: |-
+                          The seccomp options to use by this container. If seccomp options are
+                          provided at both the pod & container level, the container options
+                          override the pod options.
+                          Note that this field cannot be set when spec.os.name is windows.
+                        properties:
+                          localhostProfile:
+                            description: |-
+                              localhostProfile indicates a profile defined in a file on the node should be used.
+                              The profile must be preconfigured on the node to work.
+                              Must be a descending path, relative to the kubelet's configured seccomp profile location.
+                              Must be set if type is "Localhost". Must NOT be set for any other type.
+                            type: string
+                          type:
+                            description: |-
+                              type indicates which kind of seccomp profile will be applied.
+                              Valid options are:
+
+                              Localhost - a profile defined in a file on the node should be used.
+                              RuntimeDefault - the container runtime default profile should be used.
+                              Unconfined - no profile should be applied.
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      windowsOptions:
+                        description: |-
+                          The Windows specific settings applied to all containers.
+                          If unspecified, the options from the PodSecurityContext will be used.
+                          If set in both SecurityContext and PodSecurityContext, the value specified in SecurityContext takes precedence.
+                          Note that this field cannot be set when spec.os.name is linux.
+                        properties:
+                          gmsaCredentialSpec:
+                            description: |-
+                              GMSACredentialSpec is where the GMSA admission webhook
+                              (https://github.com/kubernetes-sigs/windows-gmsa) inlines the contents of the
+                              GMSA credential spec named by the GMSACredentialSpecName field.
+                            type: string
+                          gmsaCredentialSpecName:
+                            description: GMSACredentialSpecName is the name of the
+                              GMSA credential spec to use.
+                            type: string
+                          hostProcess:
+                            description: |-
+                              HostProcess determines if a container should be run as a 'Host Process' container.
+                              All of a Pod's containers must have the same effective HostProcess value
+                              (it is not allowed to have a mix of HostProcess containers and non-HostProcess containers).
+                              In addition, if HostProcess is true then HostNetwork must also be set to true.
+                            type: boolean
+                          runAsUserName:
+                            description: |-
+                              The UserName in Windows to run the entrypoint of the container process.
+                              Defaults to the user specified in image metadata if unspecified.
+                              May also be set in PodSecurityContext. If set in both SecurityContext and
+                              PodSecurityContext, the value specified in SecurityContext takes precedence.
+                            type: string
+                        type: object
                     type: object
                   image:
                     type: string
@@ -1197,50 +1400,6 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     type: array
-                  mediaLibraryRef:
-                    description: ObjectReference contains enough information to let
-                      you inspect or modify the referred object.
-                    properties:
-                      apiVersion:
-                        description: API version of the referent.
-                        type: string
-                      fieldPath:
-                        description: |-
-                          If referring to a piece of an object instead of an entire object, this string
-                          should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                          For example, if the object reference is to a container within a pod, this would take on a value like:
-                          "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                          the event) or if no container name is specified "spec.containers[2]" (container with
-                          index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                          referencing a part of an object.
-                        type: string
-                      kind:
-                        description: |-
-                          Kind of the referent.
-                          More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                        type: string
-                      name:
-                        description: |-
-                          Name of the referent.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      namespace:
-                        description: |-
-                          Namespace of the referent.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                        type: string
-                      resourceVersion:
-                        description: |-
-                          Specific resourceVersion to which this reference is made, if any.
-                          More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                        type: string
-                      uid:
-                        description: |-
-                          UID of the referent.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
                   nodeName:
                     type: string
                   nodeSelector:
@@ -1256,7 +1415,7 @@ spec:
                           Claims lists the names of resources, defined in spec.resourceClaims,
                           that are used by this container.
 
-                          This is an alpha field and requires enabling the
+                          This field depends on the
                           DynamicResourceAllocation feature gate.
 
                           This field is immutable. It can only be set for containers.
@@ -1561,9 +1720,10 @@ spec:
                         operator:
                           description: |-
                             Operator represents a key's relationship to the value.
-                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
                             Exists is equivalent to wildcard for value, so that a pod can
                             tolerate all taints of a particular category.
+                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
                           type: string
                         tolerationSeconds:
                           description: |-
@@ -1580,13 +1740,186 @@ spec:
                           type: string
                       type: object
                     type: array
+                  topologySpreadConstraints:
+                    items:
+                      description: TopologySpreadConstraint specifies how to spread
+                        matching pods among the given topology.
+                      properties:
+                        labelSelector:
+                          description: |-
+                            LabelSelector is used to find matching pods.
+                            Pods that match this label selector are counted to determine the number of pods
+                            in their corresponding topology domain.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        matchLabelKeys:
+                          description: |-
+                            MatchLabelKeys is a set of pod label keys to select the pods over which
+                            spreading will be calculated. The keys are used to lookup values from the
+                            incoming pod labels, those key-value labels are ANDed with labelSelector
+                            to select the group of existing pods over which spreading will be calculated
+                            for the incoming pod. The same key is forbidden to exist in both MatchLabelKeys and LabelSelector.
+                            MatchLabelKeys cannot be set when LabelSelector isn't set.
+                            Keys that don't exist in the incoming pod labels will
+                            be ignored. A null or empty list means only match against labelSelector.
+
+                            This is a beta field and requires the MatchLabelKeysInPodTopologySpread feature gate to be enabled (enabled by default).
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        maxSkew:
+                          description: |-
+                            MaxSkew describes the degree to which pods may be unevenly distributed.
+                            When `whenUnsatisfiable=DoNotSchedule`, it is the maximum permitted difference
+                            between the number of matching pods in the target topology and the global minimum.
+                            The global minimum is the minimum number of matching pods in an eligible domain
+                            or zero if the number of eligible domains is less than MinDomains.
+                            For example, in a 3-zone cluster, MaxSkew is set to 1, and pods with the same
+                            labelSelector spread as 2/2/1:
+                            In this case, the global minimum is 1.
+                            | zone1 | zone2 | zone3 |
+                            |  P P  |  P P  |   P   |
+                            - if MaxSkew is 1, incoming pod can only be scheduled to zone3 to become 2/2/2;
+                            scheduling it onto zone1(zone2) would make the ActualSkew(3-1) on zone1(zone2)
+                            violate MaxSkew(1).
+                            - if MaxSkew is 2, incoming pod can be scheduled onto any zone.
+                            When `whenUnsatisfiable=ScheduleAnyway`, it is used to give higher precedence
+                            to topologies that satisfy it.
+                            It's a required field. Default value is 1 and 0 is not allowed.
+                          format: int32
+                          type: integer
+                        minDomains:
+                          description: |-
+                            MinDomains indicates a minimum number of eligible domains.
+                            When the number of eligible domains with matching topology keys is less than minDomains,
+                            Pod Topology Spread treats "global minimum" as 0, and then the calculation of Skew is performed.
+                            And when the number of eligible domains with matching topology keys equals or greater than minDomains,
+                            this value has no effect on scheduling.
+                            As a result, when the number of eligible domains is less than minDomains,
+                            scheduler won't schedule more than maxSkew Pods to those domains.
+                            If value is nil, the constraint behaves as if MinDomains is equal to 1.
+                            Valid values are integers greater than 0.
+                            When value is not nil, WhenUnsatisfiable must be DoNotSchedule.
+
+                            For example, in a 3-zone cluster, MaxSkew is set to 2, MinDomains is set to 5 and pods with the same
+                            labelSelector spread as 2/2/2:
+                            | zone1 | zone2 | zone3 |
+                            |  P P  |  P P  |  P P  |
+                            The number of domains is less than 5(MinDomains), so "global minimum" is treated as 0.
+                            In this situation, new pod with the same labelSelector cannot be scheduled,
+                            because computed skew will be 3(3 - 0) if new Pod is scheduled to any of the three zones,
+                            it will violate MaxSkew.
+                          format: int32
+                          type: integer
+                        nodeAffinityPolicy:
+                          description: |-
+                            NodeAffinityPolicy indicates how we will treat Pod's nodeAffinity/nodeSelector
+                            when calculating pod topology spread skew. Options are:
+                            - Honor: only nodes matching nodeAffinity/nodeSelector are included in the calculations.
+                            - Ignore: nodeAffinity/nodeSelector are ignored. All nodes are included in the calculations.
+
+                            If this value is nil, the behavior is equivalent to the Honor policy.
+                          type: string
+                        nodeTaintsPolicy:
+                          description: |-
+                            NodeTaintsPolicy indicates how we will treat node taints when calculating
+                            pod topology spread skew. Options are:
+                            - Honor: nodes without taints, along with tainted nodes for which the incoming pod
+                            has a toleration, are included.
+                            - Ignore: node taints are ignored. All nodes are included.
+
+                            If this value is nil, the behavior is equivalent to the Ignore policy.
+                          type: string
+                        topologyKey:
+                          description: |-
+                            TopologyKey is the key of node labels. Nodes that have a label with this key
+                            and identical values are considered to be in the same topology.
+                            We consider each <key, value> as a "bucket", and try to put balanced number
+                            of pods into each bucket.
+                            We define a domain as a particular instance of a topology.
+                            Also, we define an eligible domain as a domain whose nodes meet the requirements of
+                            nodeAffinityPolicy and nodeTaintsPolicy.
+                            e.g. If TopologyKey is "kubernetes.io/hostname", each Node is a domain of that topology.
+                            And, if TopologyKey is "topology.kubernetes.io/zone", each zone is a domain of that topology.
+                            It's a required field.
+                          type: string
+                        whenUnsatisfiable:
+                          description: |-
+                            WhenUnsatisfiable indicates how to deal with a pod if it doesn't satisfy
+                            the spread constraint.
+                            - DoNotSchedule (default) tells the scheduler not to schedule it.
+                            - ScheduleAnyway tells the scheduler to schedule the pod in any location,
+                              but giving higher precedence to topologies that would help reduce the
+                              skew.
+                            A constraint is considered "Unsatisfiable" for an incoming pod
+                            if and only if every possible node assignment for that pod would violate
+                            "MaxSkew" on some topology.
+                            For example, in a 3-zone cluster, MaxSkew is set to 1, and pods with the same
+                            labelSelector spread as 3/1/1:
+                            | zone1 | zone2 | zone3 |
+                            | P P P |   P   |   P   |
+                            If WhenUnsatisfiable is set to DoNotSchedule, incoming pod can only be scheduled
+                            to zone2(zone3) to become 3/2/1(3/1/2) as ActualSkew(2-1) on zone2(zone3) satisfies
+                            MaxSkew(1). In other words, the cluster can still be imbalanced, but scheduler
+                            won't make it *more* imbalanced.
+                            It's a required field.
+                          type: string
+                      required:
+                      - maxSkew
+                      - topologyKey
+                      - whenUnsatisfiable
+                      type: object
+                    type: array
                 required:
-                - ContainerSecurityContext
                 - configVolumeSpec
                 - image
-                - securityContext
                 type: object
             required:
+            - mediaLibraryRef
+            - sonarrHttpRouteSpec
             - sonarrPodTemplateSpec
             type: object
           status:

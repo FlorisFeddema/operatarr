@@ -1,7 +1,12 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"maps"
+
+	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -15,13 +20,24 @@ const (
 func mergeMap(left, right map[string]string) map[string]string {
 	if left == nil {
 		return right
-	} else {
-		maps.Copy(left, right)
 	}
+	maps.Copy(left, right)
 	return left
 }
 
-func setMergedLabelsAndAnnotations(temp, desired client.Object) {
-	temp.SetAnnotations(mergeMap(temp.GetAnnotations(), desired.GetAnnotations()))
-	temp.SetLabels(mergeMap(temp.GetLabels(), desired.GetLabels()))
+// getMediaLibraryFromRef fetches the MediaLibrary object based on the provided reference
+func getMediaLibraryFromRef(ctx context.Context, c client.Client, ref corev1.ObjectReference) (*feddemadevv1alpha1.MediaLibrary, error) {
+	if ref.Kind != "MediaLibrary" {
+		return nil, errors.New("unsupported media library reference kind")
+	}
+
+	mediaLibrary := &feddemadevv1alpha1.MediaLibrary{}
+	mediaLibraryKey := client.ObjectKey{
+		Name:      ref.Name,
+		Namespace: ref.Namespace,
+	}
+	if err := c.Get(ctx, mediaLibraryKey, mediaLibrary); err != nil {
+		return nil, err
+	}
+	return mediaLibrary, nil
 }

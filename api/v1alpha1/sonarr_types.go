@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -27,32 +28,61 @@ import (
 
 // SonarrSpec defines the desired state of Sonarr
 type SonarrSpec struct {
+	// +kubebuilder:validation:Required
 	PodSpec SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
+
+	HttpRouteSpec SonarrHttpRouteSpec `json:"sonarrHttpRouteSpec"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self.kind == 'MediaLibrary'",message="mediaLibraryRef.kind must be 'MediaLibrary'"
+	MediaLibraryRef corev1.ObjectReference `json:"mediaLibraryRef"`
 }
 
 type ConfigVolumeSpec struct {
-	AccessModes      []corev1.PersistentVolumeAccessMode `json:"accessModes"`
-	Size             resource.Quantity                   `json:"resources"`
-	StorageClassName *string                             `json:"StorageClassName,omitempty"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:={"ReadWriteOnce"}
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes"`
+	// +kubebuilder:validation:Required
+	Size resource.Quantity `json:"resources"`
+	// +kubebuilder:validation:Optional
+	StorageClassName *string `json:"StorageClassName,omitempty"`
 }
 
 type SonarrPodTemplateSpec struct {
-	Image            string                        `json:"image"`
-	ImagePullPolicy  corev1.PullPolicy             `json:"imagePullPolicy,omitempty"`
+	// +kubebuilder:validation:Required
+	Image string `json:"image"`
+	// +kubebuilder:validation:Optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+	// +kubebuilder:validation:Optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
-	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
-	NodeName     string              `json:"nodeName,omitempty"`
-	Affinity     *corev1.Affinity    `json:"affinity,omitempty"`
-	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
+	// +kubebuilder:validation:Optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
+	// +kubebuilder:validation:Optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	SecurityContext          *corev1.PodSecurityContext `json:"securityContext"`
-	ContainerSecurityContext *corev1.SecurityContext    `json:"ContainerSecurityContext"`
+	// +kubebuilder:validation:Required
+	ConfigVolumeSpec *ConfigVolumeSpec `json:"configVolumeSpec"`
+	// +kubebuilder:validation:Optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+	// +kubebuilder:validation:Optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// +kubebuilder:validation:Optional
+	NodeName string `json:"nodeName,omitempty"`
+	// +kubebuilder:validation:Optional
+	SecurityContext *corev1.PodSecurityContext `json:"securityContext,omitempty"`
+	// +kubebuilder:validation:Optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+	// +kubebuilder:validation:Optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+}
 
-	ConfigVolumeSpec *ConfigVolumeSpec       `json:"configVolumeSpec"`
-	MediaLibraryRef  *corev1.ObjectReference `json:"mediaLibraryRef,omitempty"`
+type SonarrHttpRouteSpec struct {
+	// +kubebuilder:validation:Required
+	Hostname string `json:"hostname"`
+
+	ParentRef v1.ParentReference `json:"parentRef"`
 }
 
 // SonarrStatus defines the observed state of Sonarr
