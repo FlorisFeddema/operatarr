@@ -349,11 +349,11 @@ func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
 			Namespace: f.Namespace,
 		},
 		Spec: v1.JobSpec{
-			Parallelism:             utils.PtrToInt32(1),
-			Completions:             utils.PtrToInt32(1),
-			ActiveDeadlineSeconds:   utils.PtrToInt64(180),
-			BackoffLimit:            utils.PtrToInt32(1),
-			TTLSecondsAfterFinished: utils.PtrToInt32(3600),
+			Parallelism:             new(int32(1)),
+			Completions:             new(int32(1)),
+			ActiveDeadlineSeconds:   new(int64(180)),
+			BackoffLimit:            new(int32(1)),
+			TTLSecondsAfterFinished: new(int32(3600)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      f.Name + "-pvc-init",
@@ -388,19 +388,19 @@ func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
 							},
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: utils.PtrToBool(false),
-								Privileged:               utils.PtrToBool(false),
+								AllowPrivilegeEscalation: new(false),
+								Privileged:               new(false),
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
-								ReadOnlyRootFilesystem: utils.PtrToBool(true),
+								ReadOnlyRootFilesystem: new(true),
 							},
 						},
 					},
 					RestartPolicy: corev1.RestartPolicyNever,
 					NodeSelector:  map[string]string{"kubernetes.io/arch": "arm64"}, // TODO: remove once multi-arch support is added
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot:       utils.PtrToBool(true),
+						RunAsNonRoot:       new(true),
 						RunAsUser:          f.Spec.Permissions.RunAsUser,
 						RunAsGroup:         f.Spec.Permissions.RunAsGroup,
 						FSGroup:            f.Spec.Permissions.FSGroup,

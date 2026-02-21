@@ -28,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -194,8 +193,8 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 		ss.SetLabels(mergeMap(ss.GetLabels(), labelsForSonarr(r.object.Name)))
 
 		ss.Spec = appsv1.StatefulSetSpec{
-			Replicas:             ptr.To(int32(1)),
-			RevisionHistoryLimit: ptr.To(int32(0)),
+			Replicas:             new(int32(1)),
+			RevisionHistoryLimit: new(int32(0)),
 
 			ServiceName: getHeadlessServiceName(r.object.Name),
 			Selector: &metav1.LabelSelector{
@@ -215,7 +214,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 						SELinuxOptions:     r.object.Spec.PodSpec.SecurityContext.SELinuxOptions,
 						SeccompProfile:     r.object.Spec.PodSpec.SecurityContext.SeccompProfile,
 						AppArmorProfile:    r.object.Spec.PodSpec.SecurityContext.AppArmorProfile,
-						RunAsNonRoot:       ptr.To(true),
+						RunAsNonRoot:       new(true),
 						RunAsUser:          r.mediaLibrary.Spec.Permissions.RunAsUser,
 						RunAsGroup:         r.mediaLibrary.Spec.Permissions.RunAsGroup,
 						FSGroup:            r.mediaLibrary.Spec.Permissions.FSGroup,
@@ -275,9 +274,9 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
-								Privileged:               ptr.To(false),
-								ReadOnlyRootFilesystem:   ptr.To(true),
-								AllowPrivilegeEscalation: ptr.To(false),
+								Privileged:               new(false),
+								ReadOnlyRootFilesystem:   new(true),
+								AllowPrivilegeEscalation: new(false),
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
