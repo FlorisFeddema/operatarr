@@ -34,10 +34,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	lg "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 )
+
+const SonarrPort int32 = 8989
 
 // SonarrReconciler reconciles a Sonarr object
 type SonarrReconciler struct {
@@ -114,6 +117,7 @@ func (r *sonarrReconcile) reconcile() error {
 		r.reconcileStatefulSet,
 		r.reconcileHeadlessService,
 		r.reconcileService,
+		r.reconcileHttpRoute,
 	}
 	err := utils.RunConcurrently(reconcilers...)
 	//TODO: change this to aggregate errors/condition updates
@@ -227,7 +231,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 							Image:           r.object.Spec.PodSpec.Image,
 							ImagePullPolicy: r.object.Spec.PodSpec.ImagePullPolicy,
 							Ports: []corev1.ContainerPort{{
-								ContainerPort: 8989,
+								ContainerPort: SonarrPort,
 								Name:          "http",
 								Protocol:      corev1.ProtocolTCP,
 							}},
@@ -239,7 +243,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 									HTTPGet: &corev1.HTTPGetAction{
 										Path:   "/ping",
 										Scheme: corev1.URISchemeHTTP,
-										Port:   intstr.FromInt32(8989),
+										Port:   intstr.FromInt32(SonarrPort),
 									},
 								},
 							},
@@ -251,7 +255,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 									HTTPGet: &corev1.HTTPGetAction{
 										Path:   "/ping",
 										Scheme: corev1.URISchemeHTTP,
-										Port:   intstr.FromInt32(8989),
+										Port:   intstr.FromInt32(SonarrPort),
 									},
 								},
 							},
@@ -344,8 +348,8 @@ func (r *sonarrReconcile) reconcileService() error {
 		svc.Spec = corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
-				Port:       8989,
-				TargetPort: intstr.FromInt32(8989),
+				Port:       SonarrPort,
+				TargetPort: intstr.FromInt32(SonarrPort),
 				Protocol:   corev1.ProtocolTCP,
 			}},
 			Selector: labels,
@@ -379,13 +383,63 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 		svc.Spec = corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
-				Port:       8989,
-				TargetPort: intstr.FromInt32(8989),
+				Port:       SonarrPort,
+				TargetPort: intstr.FromInt32(SonarrPort),
 				Protocol:   corev1.ProtocolTCP,
 			}},
 			Selector:  labels,
 			ClusterIP: corev1.ClusterIPNone,
 			Type:      corev1.ServiceTypeClusterIP,
+		}
+
+		return nil
+	})
+	if err != nil {
+		return errors.Join(err, fmt.Errorf("unable to create or patch Headless Service with status %s", opResult))
+	}
+
+	//TODO: return status to aggregate errors/condition updates
+	return nil
+}
+
+func (r *sonarrReconcile) reconcileHttpRoute() error {
+	r.log.Info("Creating or patching HTTP Route")
+	route := &gatewayv1.HTTPRoute{}
+	route.Name = r.object.Name
+	route.Namespace = r.object.Namespace
+
+	labels := labelsForSonarr(r.object.Name)
+
+	//TODO: first check if the api is available
+
+	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, route, func() error {
+		if err := ctrl.SetControllerReference(&r.object, route, r.Scheme); err != nil {
+			return errors.Join(err, errors.New("unable to set controller owner reference for HTTP Route"))
+		}
+
+		route.SetLabels(mergeMap(route.GetLabels(), labels))
+
+		route.Spec = gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					r.object.Spec.HttpRouteSpec.ParentRef,
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(r.object.Spec.HttpRouteSpec.Hostname)},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: gatewayv1.ObjectName(route.Name),
+									Port: new(SonarrPort),
+								},
+							},
+						},
+					},
+				},
+			},
 		}
 
 		return nil

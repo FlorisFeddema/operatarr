@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -29,6 +30,8 @@ import (
 type SonarrSpec struct {
 	// +kubebuilder:validation:Required
 	PodSpec SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
+
+	HttpRouteSpec SonarrHttpRouteSpec `json:"sonarrHttpRouteSpec"`
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self.kind == 'MediaLibrary'",message="mediaLibraryRef.kind must be 'MediaLibrary'"
@@ -73,6 +76,13 @@ type SonarrPodTemplateSpec struct {
 	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
 	// +kubebuilder:validation:Optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+}
+
+type SonarrHttpRouteSpec struct {
+	// +kubebuilder:validation:Required
+	Hostname string `json:"hostname"`
+
+	ParentRef v1.ParentReference `json:"parentRef"`
 }
 
 // SonarrStatus defines the observed state of Sonarr
