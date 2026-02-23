@@ -8,6 +8,8 @@ import (
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -64,4 +66,24 @@ func getLibraryVolumeName(name string) string {
 
 func getHeadlessServiceName(name string) string {
 	return fmt.Sprintf("%s-headless", name)
+}
+
+// gvkAvailable returns true if the apiserver serves the provided GVK.
+func gvkAvailable(c client.Client, gvk schema.GroupVersionKind) (bool, error) {
+	_, err := c.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err == nil {
+		return true, nil
+	}
+	if meta.IsNoMatchError(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func gatewayHTTPRouteAvailable(c client.Client) (bool, error) {
+	available, err := gvkAvailable(c, schema.FromAPIVersionAndKind("gateway.networking.k8s.io/v1", "HTTPRoute"))
+	if err != nil {
+		return false, fmt.Errorf("error checking for HTTPRoute availability: %w", err)
+	}
+	return available, nil
 }

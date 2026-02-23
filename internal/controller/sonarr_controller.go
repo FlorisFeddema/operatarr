@@ -24,6 +24,7 @@ import (
 
 	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,7 +38,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
-	appsv1 "k8s.io/api/apps/v1"
 )
 
 const SonarrPort int32 = 8989
@@ -67,7 +67,7 @@ type sonarrReconcile struct {
 func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	genChangedPredicate := predicate.GenerationChangedPredicate{}
 
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&feddemadevv1alpha1.Sonarr{}).
 		Owns(&appsv1.StatefulSet{},
 			builder.WithPredicates(genChangedPredicate),
@@ -75,16 +75,25 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{},
 			builder.WithPredicates(genChangedPredicate),
 		).
-		Owns(&gatewayv1.HTTPRoute{},
-			builder.WithPredicates(genChangedPredicate),
-		).
 		Owns(&corev1.PersistentVolumeClaim{},
 			builder.WithPredicates(genChangedPredicate),
 		).
 		Owns(&corev1.PersistentVolume{},
 			builder.WithPredicates(genChangedPredicate),
-		).
-		Complete(r)
+		)
+
+	// Gateway API is optional. Only watch/own HTTPRoute if the API is available.
+	ok, err := gatewayHTTPRouteAvailable(mgr.GetClient())
+	if err != nil {
+		return fmt.Errorf("unable to check if Gateway API is available: %w", err)
+	}
+	if ok {
+		b = b.Owns(&gatewayv1.HTTPRoute{}, builder.WithPredicates(genChangedPredicate))
+	} else {
+		lg.Log.Info("Gateway API not available, skipping watch on HTTPRoute")
+	}
+
+	return b.Complete(r)
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -130,6 +139,7 @@ func (r *sonarrReconcile) reconcile() error {
 	}
 	err := utils.RunConcurrently(reconcilers...)
 
+	//TODO: make this more robust
 	reconcilers = []func() error{
 		r.reconcileMediaPersistentVolume,
 	}
