@@ -229,6 +229,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 	pvc := &corev1.PersistentVolumeClaim{}
 	pvc.Name = r.object.Name
 	pvc.Namespace = r.object.Namespace
+	labels := labelsForResource(r.object.Name)
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, pvc, func() error {
 		if err := ctrl.SetControllerReference(&r.object, pvc, r.Scheme); err != nil {
@@ -237,6 +238,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 
 		r.log.Info("Checking storage class", "pvcStorageClass", pvc.Spec.StorageClassName, "libraryStorageClass", r.object.Spec.PVC.StorageClassName)
 		storageClass := cmp.Or(pvc.Spec.StorageClassName, r.object.Spec.PVC.StorageClassName)
+		pvc.SetLabels(mergeMap(pvc.GetLabels(), labels))
 		pvc.Spec = corev1.PersistentVolumeClaimSpec{
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{"storage": r.object.Spec.PVC.Size}},

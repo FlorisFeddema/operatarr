@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
@@ -40,4 +41,27 @@ func getMediaLibraryFromRef(ctx context.Context, c client.Client, ref corev1.Obj
 		return nil, err
 	}
 	return mediaLibrary, nil
+}
+
+func getMediaLibraryPVC(c client.Client, ctx context.Context, ml feddemadevv1alpha1.MediaLibrary) (*corev1.PersistentVolumeClaim, error) {
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(ctx, client.ObjectKey{Name: *ml.Status.EffectivePVC, Namespace: ml.Namespace}, pvc); err != nil {
+		return nil, fmt.Errorf("unable to get MediaLibrary PVC: %w", err)
+	}
+	return pvc, nil
+}
+
+func labelsForResource(name string) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       name,
+		"app.kubernetes.io/managed-by": "operatarr",
+	}
+}
+
+func getLibraryVolumeName(name string) string {
+	return fmt.Sprintf("%s-media", name)
+}
+
+func getHeadlessServiceName(name string) string {
+	return fmt.Sprintf("%s-headless", name)
 }

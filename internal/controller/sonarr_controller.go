@@ -75,6 +75,15 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{},
 			builder.WithPredicates(genChangedPredicate),
 		).
+		Owns(&gatewayv1.HTTPRoute{},
+			builder.WithPredicates(genChangedPredicate),
+		).
+		Owns(&corev1.PersistentVolumeClaim{},
+			builder.WithPredicates(genChangedPredicate),
+		).
+		Owns(&corev1.PersistentVolume{},
+			builder.WithPredicates(genChangedPredicate),
+		).
 		Complete(r)
 }
 
@@ -120,6 +129,11 @@ func (r *sonarrReconcile) reconcile() error {
 		r.reconcileHttpRoute,
 	}
 	err := utils.RunConcurrently(reconcilers...)
+
+	reconcilers = []func() error{
+		r.reconcileMediaPersistentVolume,
+	}
+	err = utils.RunConcurrently(reconcilers...)
 	//TODO: change this to aggregate errors/condition updates
 	if err != nil {
 		return err
@@ -145,6 +159,10 @@ func (r *sonarrReconcile) loadDesiredState() error {
 		return err
 	}
 	r.mediaLibrary = mediaLibrary
+
+	if !mediaLibrary.Status.Initialized {
+		return errors.New("media library not initialized")
+	}
 
 	r.log.Info("Desired state loaded")
 	return nil
@@ -188,25 +206,25 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 	ss := &appsv1.StatefulSet{}
 	ss.Name = r.object.Name
 	ss.Namespace = r.object.Namespace
+	labels := labelsForResource(r.object.Name)
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, ss, func() error {
 		if err := ctrl.SetControllerReference(&r.object, ss, r.Scheme); err != nil {
 			return errors.Join(err, errors.New("unable to set controller reference for StatefulSet"))
 		}
 
-		ss.SetLabels(mergeMap(ss.GetLabels(), labelsForSonarr(r.object.Name)))
-
+		ss.SetLabels(mergeMap(ss.GetLabels(), labels))
 		ss.Spec = appsv1.StatefulSetSpec{
 			Replicas:             new(int32(1)),
 			RevisionHistoryLimit: new(int32(0)),
 
 			ServiceName: getHeadlessServiceName(r.object.Name),
 			Selector: &metav1.LabelSelector{
-				MatchLabels: labelsForSonarr(r.object.Name),
+				MatchLabels: labels,
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labelsForSonarr(r.object.Name),
+					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
 					Affinity:                  r.object.Spec.PodSpec.Affinity,
@@ -336,8 +354,7 @@ func (r *sonarrReconcile) reconcileService() error {
 	svc := &corev1.Service{}
 	svc.Name = r.object.Name
 	svc.Namespace = r.object.Namespace
-
-	labels := labelsForSonarr(r.object.Name)
+	labels := labelsForResource(r.object.Name)
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, svc, func() error {
 		if err := ctrl.SetControllerReference(&r.object, svc, r.Scheme); err != nil {
@@ -371,8 +388,7 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 	svc := &corev1.Service{}
 	svc.Name = getHeadlessServiceName(r.object.Name)
 	svc.Namespace = r.object.Namespace
-
-	labels := labelsForSonarr(r.object.Name)
+	labels := labelsForResource(r.object.Name)
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, svc, func() error {
 		if err := ctrl.SetControllerReference(&r.object, svc, r.Scheme); err != nil {
@@ -407,8 +423,7 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 	route := &gatewayv1.HTTPRoute{}
 	route.Name = r.object.Name
 	route.Namespace = r.object.Namespace
-
-	labels := labelsForSonarr(r.object.Name)
+	labels := labelsForResource(r.object.Name)
 
 	//TODO: first check if the api is available
 
@@ -418,7 +433,6 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 		}
 
 		route.SetLabels(mergeMap(route.GetLabels(), labels))
-
 		route.Spec = gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
@@ -452,13 +466,40 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 	return nil
 }
 
-func labelsForSonarr(name string) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       name,
-		"app.kubernetes.io/managed-by": "operatarr",
+func (r *sonarrReconcile) reconcileMediaPersistentVolume() error {
+	if r.mediaLibrary.Spec.CrossNamespaceAccess {
+		r.log.Info("MediaLibrary uses cross-namespace access, skipping PersistentVolume creation")
+		return nil
 	}
-}
 
-func getHeadlessServiceName(name string) string {
-	return fmt.Sprintf("%s-headless", name)
+	r.log.Info("Creating or patching Media Persistent Volume")
+	pv := &corev1.PersistentVolume{}
+	pv.Name = getLibraryVolumeName(r.object.Name)
+	pv.Namespace = r.object.Namespace
+	labels := labelsForResource(r.object.Name)
+
+	mediaPvc, err := getMediaLibraryPVC(r.Client, r.ctx, *r.mediaLibrary)
+	if err != nil {
+		return errors.Join(err, fmt.Errorf("unable to get MediaLibrary PVC for PersistentVolume creation"))
+	}
+
+	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, pv, func() error {
+		if err := ctrl.SetControllerReference(&r.object, pv, r.Scheme); err != nil {
+			return errors.Join(err, errors.New("unable to set controller owner reference for Media Persistent Volume"))
+		}
+
+		pv.SetLabels(mergeMap(pv.GetLabels(), labels))
+		pv.Spec = corev1.PersistentVolumeSpec{
+			AccessModes:      mediaPvc.Spec.AccessModes,
+			Capacity:         mediaPvc.Spec.Resources.Requests,
+			StorageClassName: *mediaPvc.Spec.StorageClassName,
+		}
+		return nil
+	})
+	if err != nil {
+		return errors.Join(err, fmt.Errorf("unable to create or patch Media Persistent Volume with status %s", opResult))
+	}
+
+	//TODO: return status to aggregate errors/condition updates
+	return nil
 }
