@@ -132,12 +132,15 @@ func (r *sonarrReconcile) reconcile() error {
 	r.log.Info("Running Sonarr reconcilers")
 	//TODO: add step to create media volume based on MediaLibrary
 	reconcilers := []func() error{
-		r.reconcileStatefulSet,
 		r.reconcileHeadlessService,
 		r.reconcileService,
 		r.reconcileHttpRoute,
+		//TODO: add step to create media volume based on MediaLibrary
 	}
 	err := utils.RunConcurrently(reconcilers...)
+	if err != nil {
+		return err
+	}
 
 	//TODO: make this more robust
 	reconcilers = []func() error{
@@ -148,6 +151,17 @@ func (r *sonarrReconcile) reconcile() error {
 	if err != nil {
 		return err
 	}
+
+	//TODO: make this more robust
+	reconcilers = []func() error{
+		r.reconcileStatefulSet,
+	}
+	err = utils.RunConcurrently(reconcilers...)
+	//TODO: change this to aggregate errors/condition updates
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
