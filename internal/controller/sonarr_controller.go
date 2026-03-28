@@ -47,7 +47,8 @@ type SonarrReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	Timezone string
+	Timezone            string
+	GatewayAPIAvailable bool
 }
 
 type sonarrReconcile struct {
@@ -82,15 +83,8 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(genChangedPredicate),
 		)
 
-	// Gateway API is optional. Only watch/own HTTPRoute if the API is available.
-	ok, err := gatewayHTTPRouteAvailable(mgr.GetClient())
-	if err != nil {
-		return fmt.Errorf("unable to check if Gateway API is available: %w", err)
-	}
-	if ok {
+	if r.GatewayAPIAvailable {
 		b = b.Owns(&gatewayv1.HTTPRoute{}, builder.WithPredicates(genChangedPredicate))
-	} else {
-		lg.Log.Info("Gateway API not available, skipping watch on HTTPRoute")
 	}
 
 	return b.Complete(r)
@@ -153,10 +147,11 @@ func (r *sonarrReconcile) reconcile() error {
 	}
 
 	//TODO: make this more robust
-	reconcilers = []func() error{
+	reconcilers2 := []func() utils.ReturnObject{
 		r.reconcileStatefulSet,
 	}
-	err = utils.RunConcurrently(reconcilers...)
+	rr := utils.RunConcurrently2(reconcilers2...)
+
 	//TODO: change this to aggregate errors/condition updates
 	if err != nil {
 		return err
@@ -225,7 +220,7 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 	return false, nil
 }
 
-func (r *sonarrReconcile) reconcileStatefulSet() error {
+func (r *sonarrReconcile) reconcileStatefulSet() ReturnObject {
 	r.log.Info("Creating or patching StatefulSet")
 	ss := &appsv1.StatefulSet{}
 	ss.Name = r.object.Name
