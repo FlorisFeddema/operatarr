@@ -16,6 +16,10 @@ TODO: Provide installation instructions.
 
 TODO: Add examples for running and using operatarr.
 
+## CI
+
+Argo Workflows and Argo Events manifests for running this repository's CI from an external Argo installation live in [ci/argo/README.md](ci/argo/README.md).
+
 ## Contributing
 
 Contributions are welcome! Please open issues or submit pull requests.
