@@ -88,8 +88,14 @@ spec:
                   rule: self.kind == 'MediaLibrary'
               sonarrHttpRouteSpec:
                 properties:
+                  enabled:
+                    default: true
+                    type: boolean
                   hostname:
                     type: string
+                    x-kubernetes-validations:
+                    - message: hostname must be set if httpRouteSpec.enabled is true
+                      rule: self.enabled == false || self.hostname != ''
                   parentRef:
                     description: |-
                       ParentReference identifies an API object (usually a Gateway) that can be considered
@@ -238,6 +244,7 @@ spec:
                     - name
                     type: object
                 required:
+                - enabled
                 - hostname
                 - parentRef
                 type: object
@@ -1256,7 +1263,6 @@ spec:
                           procMount denotes the type of proc mount to use for the containers.
                           The default value is Default which uses the container runtime defaults for
                           readonly paths and masked paths.
-                          This requires the ProcMountType feature flag to be enabled.
                           Note that this field cannot be set when spec.os.name is windows.
                         type: string
                       readOnlyRootFilesystem:

@@ -80,6 +80,10 @@ type SonarrPodTemplateSpec struct {
 
 type SonarrHttpRouteSpec struct {
 	// +kubebuilder:validation:Required
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled"`
+
+	// +kubebuilder:validation:XValidation:rule="self.enabled == false || self.hostname != ''",message="hostname must be set if httpRouteSpec.enabled is true"
 	Hostname string `json:"hostname"`
 
 	ParentRef v1.ParentReference `json:"parentRef"`

@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -125,35 +124,21 @@ func (r *sonarrReconcile) reconcile() error {
 
 	r.log.Info("Running Sonarr reconcilers")
 	//TODO: add step to create media volume based on MediaLibrary
-	reconcilers := []func() error{
-		r.reconcileHeadlessService,
-		r.reconcileService,
-		r.reconcileHttpRoute,
-		//TODO: add step to create media volume based on MediaLibrary
+	if err := r.reconcileHeadlessService(); err != nil {
+		return err
 	}
-	err := utils.RunConcurrently(reconcilers...)
-	if err != nil {
+	if err := r.reconcileService(); err != nil {
+		return err
+	}
+	if err := r.reconcileHttpRoute(); err != nil {
 		return err
 	}
 
-	//TODO: make this more robust
-	reconcilers = []func() error{
-		r.reconcileMediaPersistentVolume,
-	}
-	err = utils.RunConcurrently(reconcilers...)
-	//TODO: change this to aggregate errors/condition updates
-	if err != nil {
+	if err := r.reconcileMediaPersistentVolume(); err != nil {
 		return err
 	}
 
-	//TODO: make this more robust
-	reconcilers2 := []func() utils.ReturnObject{
-		r.reconcileStatefulSet,
-	}
-	rr := utils.RunConcurrently2(reconcilers2...)
-
-	//TODO: change this to aggregate errors/condition updates
-	if err != nil {
+	if err := r.reconcileStatefulSet(); err != nil {
 		return err
 	}
 
@@ -220,7 +205,7 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 	return false, nil
 }
 
-func (r *sonarrReconcile) reconcileStatefulSet() ReturnObject {
+func (r *sonarrReconcile) reconcileStatefulSet() error {
 	r.log.Info("Creating or patching StatefulSet")
 	ss := &appsv1.StatefulSet{}
 	ss.Name = r.object.Name
@@ -364,7 +349,6 @@ func (r *sonarrReconcile) reconcileStatefulSet() ReturnObject {
 		return errors.Join(err, fmt.Errorf("unable to create StatefulSet with status %s", opResult))
 	}
 
-	//TODO: return status to aggregate errors/condition updates
 	return nil
 }
 
@@ -398,7 +382,6 @@ func (r *sonarrReconcile) reconcileService() error {
 		return errors.Join(err, fmt.Errorf("unable to create or patch Service with status %s", opResult))
 	}
 
-	//TODO: return status to aggregate errors/condition updates
 	return nil
 }
 
@@ -433,18 +416,22 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 		return errors.Join(err, fmt.Errorf("unable to create or patch Headless Service with status %s", opResult))
 	}
 
-	//TODO: return status to aggregate errors/condition updates
 	return nil
 }
 
 func (r *sonarrReconcile) reconcileHttpRoute() error {
+	if !r.object.Spec.HttpRouteSpec.Enabled {
+		return nil
+	}
 	r.log.Info("Creating or patching HTTP Route")
+	if !r.GatewayAPIAvailable {
+		return errors.New("GatewayAPI is not available in the cluster, cannot create HTTP Route")
+	}
+
 	route := &gatewayv1.HTTPRoute{}
 	route.Name = r.object.Name
 	route.Namespace = r.object.Namespace
 	labels := labelsForResource(r.object.Name)
-
-	//TODO: first check if the api is available
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, route, func() error {
 		if err := ctrl.SetControllerReference(&r.object, route, r.Scheme); err != nil {
@@ -481,7 +468,6 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 		return errors.Join(err, fmt.Errorf("unable to create or patch Headless Service with status %s", opResult))
 	}
 
-	//TODO: return status to aggregate errors/condition updates
 	return nil
 }
 
@@ -519,6 +505,5 @@ func (r *sonarrReconcile) reconcileMediaPersistentVolume() error {
 		return errors.Join(err, fmt.Errorf("unable to create or patch Media Persistent Volume with status %s", opResult))
 	}
 
-	//TODO: return status to aggregate errors/condition updates
 	return nil
 }

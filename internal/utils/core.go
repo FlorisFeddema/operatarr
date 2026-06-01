@@ -21,44 +21,6 @@ type ReconcileResult struct {
 	Conditions []metav1.Condition
 }
 
-func RunConcurrently2(fnList ...func() ReturnObject) ReconcileResult {
-	roList := make(chan ReturnObject)
-	wg := sync.WaitGroup{}
-
-	// Run all the functions concurrently
-	for _, fn := range fnList {
-		fn := fn
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			roList <- fn()
-		}()
-	}
-
-	// Close the output channel whenever all the functions completed
-	go func() {
-		wg.Wait()
-		close(roList)
-	}()
-
-	rr := ReconcileResult{
-		Success:    true,
-		Conditions: []metav1.Condition{},
-	}
-	for ro := range roList {
-		if ro.Status != metav1.ConditionTrue {
-			rr.Success = false
-		}
-		rr.Conditions = append(rr.Conditions, metav1.Condition{
-			Type:    ro.Type,
-			Status:  ro.Status,
-			Reason:  ro.Reason,
-			Message: ro.Message,
-		})
-	}
-	return rr
-}
-
 // RunConcurrently runs a list of functions concurrently and returns a channel with their errors
 func RunConcurrently(fnList ...func() error) error {
 	errorList := make(chan error)
