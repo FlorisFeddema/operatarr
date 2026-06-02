@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -55,6 +56,8 @@ func init() {
 }
 
 func main() {
+	const defaultJobRunnerImage = "harbor.feddema.dev/operatarr/job-runner:dev"
+
 	var jobRunnerImage string
 	var timezone string
 	var metricsAddr string
@@ -63,7 +66,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
-	flag.StringVar(&jobRunnerImage, "job-runner-image", "harbor.feddema.dev/operatarr/job-runner:dev", "The image for the jobrunner")
+	flag.StringVar(&jobRunnerImage, "job-runner-image", defaultJobRunnerImage, "The image for the jobrunner")
 	flag.StringVar(&timezone, "timezone", "UTC", "The timezone to use in the managed pods")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")

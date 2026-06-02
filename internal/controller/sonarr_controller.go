@@ -41,6 +41,8 @@ import (
 
 const SonarrPort int32 = 8989
 
+const sonarrHTTPPortName = "http"
+
 // SonarrReconciler reconciles a Sonarr object
 type SonarrReconciler struct {
 	client.Client
@@ -123,7 +125,7 @@ func (r *sonarrReconcile) reconcile() error {
 	}
 
 	r.log.Info("Running Sonarr reconcilers")
-	//TODO: add step to create media volume based on MediaLibrary
+	// TODO: add step to create media volume based on MediaLibrary.
 	if err := r.reconcileHeadlessService(); err != nil {
 		return err
 	}
@@ -187,7 +189,7 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 		return true, nil
 	}
 
-	//Check if the resource is being deleted
+	// Check if the resource is being deleted.
 	if !r.object.GetDeletionTimestamp().IsZero() {
 		if controllerutil.ContainsFinalizer(&r.object, finalizerName) {
 			r.log.Info("performing finalization before deletion of sonarr")
@@ -254,7 +256,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 							ImagePullPolicy: r.object.Spec.PodSpec.ImagePullPolicy,
 							Ports: []corev1.ContainerPort{{
 								ContainerPort: SonarrPort,
-								Name:          "http",
+								Name:          sonarrHTTPPortName,
 								Protocol:      corev1.ProtocolTCP,
 							}},
 							LivenessProbe: &corev1.Probe{
@@ -316,7 +318,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 							},
 						},
 					},
-					//TODO: Add media volume
+					// TODO: Add media volume.
 					Volumes: []corev1.Volume{
 						{
 							Name: "media",
@@ -327,7 +329,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 							},
 						},
 					},
-					//TODO: Add media volume
+					// TODO: Add media volume.
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
@@ -367,7 +369,7 @@ func (r *sonarrReconcile) reconcileService() error {
 		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
 		svc.Spec = corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{{
-				Name:       "http",
+				Name:       sonarrHTTPPortName,
 				Port:       SonarrPort,
 				TargetPort: intstr.FromInt32(SonarrPort),
 				Protocol:   corev1.ProtocolTCP,
@@ -400,7 +402,7 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
 		svc.Spec = corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{{
-				Name:       "http",
+				Name:       sonarrHTTPPortName,
 				Port:       SonarrPort,
 				TargetPort: intstr.FromInt32(SonarrPort),
 				Protocol:   corev1.ProtocolTCP,

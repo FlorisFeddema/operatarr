@@ -55,8 +55,8 @@ type MediaLibraryPVC struct {
 	// +kubebuilder:validation:Optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
-	//+kubebuilder:validation:XValidation:rule="has(self.pvcName) or has(self.resources)",message="Either pvcName or resources must be set"
-	//+kubebuilder:validation:XValidation:rule="!(has(self.pvcName) and (has(self.resources) or has(self.storageClassName) or has(self.annotations))",message="Only pvcName or resources/storageClassName/annotations can be set, not both"
+	// +kubebuilder:validation:XValidation:rule="has(self.pvcName) or has(self.resources)",message="Either pvcName or resources must be set"
+	// +kubebuilder:validation:XValidation:rule="!(has(self.pvcName) and (has(self.resources) or has(self.storageClassName) or has(self.annotations))",message="Only pvcName or resources/storageClassName/annotations can be set, not both"
 }
 
 // MediaPermissions defines POSIX-like permissions to set on the MediaLibrary.
@@ -87,7 +87,7 @@ type MediaLibraryStatus struct {
 	// EffectivePVC is the name of the PersistentVolumeClaim used for this MediaLibrary.
 	EffectivePVC *string `json:"effectivePVC,omitempty"`
 
-	//Initialized indicates whether the MediaLibrary has been initialized.
+	// Initialized indicates whether the MediaLibrary has been initialized.
 	// +kubebuilder:default:=false
 	Initialized bool `json:"initialized,omitempty"`
 }
@@ -115,8 +115,4 @@ type MediaLibraryList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MediaLibrary `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&MediaLibrary{}, &MediaLibraryList{})
 }

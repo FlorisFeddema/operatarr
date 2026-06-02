@@ -144,7 +144,7 @@ func (r *mediaLibraryReconcile) preconcile() (bool, error) {
 		return true, nil
 	}
 
-	//Check if the resource is being deleted
+	// Check if the resource is being deleted.
 	if !r.object.GetDeletionTimestamp().IsZero() {
 		if controllerutil.ContainsFinalizer(&r.object, finalizerName) {
 			r.log.Info("performing finalization before deletion of mediaLibrary")
@@ -175,7 +175,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 			r.log.Error(err, "unable to fetch pre-existing PVC", "pvcName", *r.object.Spec.PVC.PVCName)
 
 			cond := metav1.Condition{
-				Type:    "Available",
+				Type:    typeAvailable,
 				Status:  metav1.ConditionFalse,
 				Reason:  "ExistingPVCNotFound",
 				Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' was not found",
@@ -194,7 +194,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		if !slices.Contains(pvc.Spec.AccessModes, corev1.ReadWriteMany) {
 			err := errors.New("pre-existing PVC does not have ReadWriteMany access mode")
 			cond := metav1.Condition{
-				Type:    "Available",
+				Type:    typeAvailable,
 				Status:  metav1.ConditionFalse,
 				Reason:  "ExistingPVCInvalidAccessMode",
 				Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' does not have ReadWriteMany access mode",
@@ -209,7 +209,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		}
 
 		cond := metav1.Condition{
-			Type:    "Available",
+			Type:    typeAvailable,
 			Status:  metav1.ConditionTrue,
 			Reason:  "ExistingPVCFound",
 			Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' was found",
@@ -255,7 +255,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 	if opResult != controllerutil.OperationResultNone {
 		r.log.Info("PVC reconciled with result", "result", opResult)
 		cond := metav1.Condition{
-			Type:    "Available",
+			Type:    typeAvailable,
 			Status:  metav1.ConditionFalse,
 			Reason:  "PVCCreated",
 			Message: fmt.Sprintf("The PVC '%s' was successfully created", pvc.Name),
@@ -297,7 +297,7 @@ func initializeJob(r *mediaLibraryReconcile) error {
 
 				// if the job completed successfully, set initialized to true
 				cond := metav1.Condition{
-					Type:    "Available",
+					Type:    typeAvailable,
 					Status:  metav1.ConditionTrue,
 					Reason:  "PVCInitialized",
 					Message: "The PVC is initialized",
@@ -316,7 +316,7 @@ func initializeJob(r *mediaLibraryReconcile) error {
 				r.log.Error(errors.New(c.Message), "PVC initialization job failed")
 
 				cond := metav1.Condition{
-					Type:    "Available",
+					Type:    typeAvailable,
 					Status:  metav1.ConditionFalse,
 					Reason:  "PVCInitializationFailed",
 					Message: "The PVC initialization job failed: " + c.Message,
@@ -411,7 +411,7 @@ func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
-					ImagePullSecrets: nil, //TODO: add later if needed
+					ImagePullSecrets: nil, // TODO: add later if needed.
 				},
 			},
 		},

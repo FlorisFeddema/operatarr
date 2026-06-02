@@ -29,13 +29,13 @@ func MediaLibrary(options *Options) {
 func configureLibrary(libraryRoot string) error {
 	log.Info("Configuring media library at " + libraryRoot)
 
-	//check if libraryRoot exists
+	// Check if libraryRoot exists.
 	_, err := os.Stat(libraryRoot)
 	if os.IsNotExist(err) {
 		return errors.New("media library root does not exist")
 	}
 
-	//create folders if they do not exist
+	// Create folders if they do not exist.
 	folders := []string{"movies", "tv", "music"}
 	amountErrors := 0
 	for _, folder := range folders {

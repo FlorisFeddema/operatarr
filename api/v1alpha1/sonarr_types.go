@@ -119,7 +119,3 @@ type SonarrList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []Sonarr `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&Sonarr{}, &SonarrList{})
-}

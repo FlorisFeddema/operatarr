@@ -33,6 +33,8 @@ import (
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 )
 
+const defaultNamespace = "default"
+
 var _ = Describe("MediaLibrary Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
@@ -41,7 +43,7 @@ var _ = Describe("MediaLibrary Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default",
+			Namespace: defaultNamespace,
 		}
 		medialibrary := &feddemadevv1alpha1.MediaLibrary{}
 
@@ -52,7 +54,7 @@ var _ = Describe("MediaLibrary Controller", func() {
 				resource := &feddemadevv1alpha1.MediaLibrary{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: defaultNamespace,
 					},
 					Spec: feddemadevv1alpha1.MediaLibrarySpec{
 						PVC: feddemadevv1alpha1.MediaLibraryPVC{
@@ -90,9 +92,9 @@ var _ = Describe("MediaLibrary Controller", func() {
 })
 
 // Helper to fetch condition by type for assertions
-func getConditionByType(conds []metav1.Condition, t string) *metav1.Condition {
+func getAvailableCondition(conds []metav1.Condition) *metav1.Condition {
 	for i := range conds {
-		if conds[i].Type == t {
+		if conds[i].Type == typeAvailable {
 			return &conds[i]
 		}
 	}
@@ -113,7 +115,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 	It("successfully reconciles a MediaLibrary referencing an existing RWX PVC", func() {
 		mlName := "ml-existing-success"
 		pvcName := "pvc-existing-success"
-		ns := "default"
+		ns := defaultNamespace
 
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: ns},
@@ -136,7 +138,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 		Eventually(func(g Gomega) {
 			updated := &feddemadevv1alpha1.MediaLibrary{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, updated)).To(Succeed())
-			cond := getConditionByType(updated.Status.Conditions, "Available")
+			cond := getAvailableCondition(updated.Status.Conditions)
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCFound"))
@@ -153,7 +155,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 	It("fails to reconcile when existing PVC lacks ReadWriteMany", func() {
 		mlName := "ml-existing-bad-access"
 		pvcName := "pvc-bad-access"
-		ns := "default"
+		ns := defaultNamespace
 
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: ns},
@@ -181,7 +183,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 		Eventually(func(g Gomega) {
 			updated := &feddemadevv1alpha1.MediaLibrary{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, updated)).To(Succeed())
-			cond := getConditionByType(updated.Status.Conditions, "Available")
+			cond := getAvailableCondition(updated.Status.Conditions)
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCInvalidAccessMode"))
@@ -192,7 +194,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 	It("fails to reconcile when referenced PVC does not exist", func() {
 		mlName := "ml-existing-missing"
 		pvcName := "nonexistent-pvc"
-		ns := "default"
+		ns := defaultNamespace
 
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
@@ -207,7 +209,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 		Eventually(func(g Gomega) {
 			updated := &feddemadevv1alpha1.MediaLibrary{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, updated)).To(Succeed())
-			cond := getConditionByType(updated.Status.Conditions, "Available")
+			cond := getAvailableCondition(updated.Status.Conditions)
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCNotFound"))
@@ -229,7 +231,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 
 	It("resizes a managed PVC when MediaLibrary size increases", func() {
 		mlName := "ml-managed-resize"
-		ns := "default"
+		ns := defaultNamespace
 
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
@@ -261,7 +263,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 
 	It("merges and updates annotations on managed PVC across reconciles", func() {
 		mlName := "ml-managed-annotations"
-		ns := "default"
+		ns := defaultNamespace
 
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
@@ -295,7 +297,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 
 	It("rejects attempts to change StorageClassName for an existing managed PVC", func() {
 		mlName := "ml-managed-sc-immutable"
-		ns := "default"
+		ns := defaultNamespace
 		originalSC := "fast-storage"
 		newSC := "slow-storage"
 
@@ -324,7 +326,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 		Eventually(func(g Gomega) {
 			updated := &feddemadevv1alpha1.MediaLibrary{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, updated)).To(Succeed())
-			cond := getConditionByType(updated.Status.Conditions, "Available")
+			cond := getAvailableCondition(updated.Status.Conditions)
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(cond.Reason).To(Equal("StorageClassImmutable"))
