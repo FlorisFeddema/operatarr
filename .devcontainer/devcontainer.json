@@ -1,0 +1,17 @@
+{
+  "name": "operatarr",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.27",
+      "installGoTools": true
+    }
+  },
+  "remoteUser": "vscode",
+  "containerEnv": {
+    "LOCALBIN": "/home/vscode/.cache/operatarr/bin"
+  }
+}

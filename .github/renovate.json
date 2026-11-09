@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "local>FlorisFeddema/renovate-config"
+    "local>FlorisFeddema/renovate-config",
+    "customManagers:dockerfileVersions"
   ]
 }
