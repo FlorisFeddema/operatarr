@@ -32,8 +32,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	lg "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
@@ -71,6 +73,7 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&feddemadevv1alpha1.Sonarr{}).
+		Watches(&feddemadevv1alpha1.MediaLibrary{}, handler.EnqueueRequestsFromMapFunc(r.mapMediaLibraryToSonarrs)).
 		Owns(&appsv1.StatefulSet{},
 			builder.WithPredicates(genChangedPredicate),
 		).
@@ -89,6 +92,32 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return b.Complete(r)
+}
+
+func (r *SonarrReconciler) mapMediaLibraryToSonarrs(ctx context.Context, object client.Object) []reconcile.Request {
+	mediaLibrary, ok := object.(*feddemadevv1alpha1.MediaLibrary)
+	if !ok {
+		return nil
+	}
+
+	sonarrs := &feddemadevv1alpha1.SonarrList{}
+	if err := r.List(ctx, sonarrs); err != nil {
+		lg.FromContext(ctx).Error(err, "unable to list Sonarr resources for MediaLibrary watch",
+			"mediaLibrary", client.ObjectKeyFromObject(mediaLibrary))
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(sonarrs.Items))
+	for i := range sonarrs.Items {
+		sonarr := &sonarrs.Items[i]
+		ref := sonarr.Spec.MediaLibraryRef
+		if ref.Kind != "MediaLibrary" || ref.Name != mediaLibrary.Name || ref.Namespace != mediaLibrary.Namespace {
+			continue
+		}
+
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)})
+	}
+	return requests
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -213,6 +242,19 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 	ss.Name = r.object.Name
 	ss.Namespace = r.object.Namespace
 	labels := labelsForResource(r.object.Name)
+	permissions := effectiveMediaPermissions(r.mediaLibrary.Spec.Permissions)
+	podSecurityContext := &corev1.PodSecurityContext{
+		RunAsNonRoot:       new(true),
+		RunAsUser:          permissions.RunAsUser,
+		RunAsGroup:         permissions.RunAsGroup,
+		FSGroup:            permissions.FSGroup,
+		SupplementalGroups: permissions.SupplementalGroups,
+	}
+	if configured := r.object.Spec.PodSpec.SecurityContext; configured != nil {
+		podSecurityContext.SELinuxOptions = configured.SELinuxOptions
+		podSecurityContext.SeccompProfile = configured.SeccompProfile
+		podSecurityContext.AppArmorProfile = configured.AppArmorProfile
+	}
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, ss, func() error {
 		if err := ctrl.SetControllerReference(&r.object, ss, r.Scheme); err != nil {
@@ -238,17 +280,8 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 					Tolerations:               r.object.Spec.PodSpec.Tolerations,
 					TopologySpreadConstraints: r.object.Spec.PodSpec.TopologySpreadConstraints,
 					NodeName:                  r.object.Spec.PodSpec.NodeName,
-					SecurityContext: &corev1.PodSecurityContext{
-						SELinuxOptions:     r.object.Spec.PodSpec.SecurityContext.SELinuxOptions,
-						SeccompProfile:     r.object.Spec.PodSpec.SecurityContext.SeccompProfile,
-						AppArmorProfile:    r.object.Spec.PodSpec.SecurityContext.AppArmorProfile,
-						RunAsNonRoot:       new(true),
-						RunAsUser:          r.mediaLibrary.Spec.Permissions.RunAsUser,
-						RunAsGroup:         r.mediaLibrary.Spec.Permissions.RunAsGroup,
-						FSGroup:            r.mediaLibrary.Spec.Permissions.FSGroup,
-						SupplementalGroups: r.mediaLibrary.Spec.Permissions.SupplementalGroups,
-					},
-					ImagePullSecrets: r.object.Spec.PodSpec.ImagePullSecrets,
+					SecurityContext:           podSecurityContext,
+					ImagePullSecrets:          r.object.Spec.PodSpec.ImagePullSecrets,
 					Containers: []corev1.Container{
 						{
 							Name:            "sonarr",
@@ -290,11 +323,11 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 								},
 								{
 									Name:  "PUID",
-									Value: strconv.FormatInt(*r.mediaLibrary.Spec.Permissions.RunAsUser, 10),
+									Value: strconv.FormatInt(*permissions.RunAsUser, 10),
 								},
 								{
 									Name:  "PGID",
-									Value: strconv.FormatInt(*r.mediaLibrary.Spec.Permissions.RunAsGroup, 10),
+									Value: strconv.FormatInt(*permissions.RunAsGroup, 10),
 								},
 							},
 							Resources: r.object.Spec.PodSpec.Resources,

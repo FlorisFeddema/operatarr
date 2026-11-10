@@ -26,6 +26,9 @@ tests against an isolated local API server; no existing cluster is required.
 The cluster-dependent e2e suite is excluded and remains available through
 `make test-e2e` against a configured kind cluster.
 
+The current engineering intake and prioritized follow-up work are tracked in
+[docs/roadmap.md](docs/roadmap.md).
+
 ## Contributing
 
 Contributions are welcome! Please open issues or submit pull requests.

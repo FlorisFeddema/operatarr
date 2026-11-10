@@ -26,6 +26,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -75,4 +77,50 @@ var _ = Describe("Sonarr HTTP route validation", func() {
 		Entry("accepts a disabled route without a hostname", false, "", true),
 		Entry("accepts a disabled route with a hostname", false, "sonarr.example.com", true),
 	)
+})
+
+var _ = Describe("Sonarr MediaLibrary watch mapping", func() {
+	It("enqueues Sonarr resources that reference the changed MediaLibrary", func() {
+		ctx := context.Background()
+		mediaLibrary := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: "watched-library", Namespace: defaultNamespace},
+		}
+
+		createSonarr := func(name, libraryName string) *feddemadevv1alpha1.Sonarr {
+			sonarr := &feddemadevv1alpha1.Sonarr{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
+				Spec: feddemadevv1alpha1.SonarrSpec{
+					PodSpec: feddemadevv1alpha1.SonarrPodTemplateSpec{
+						Image: "sonarr:test",
+						ConfigVolumeSpec: &feddemadevv1alpha1.ConfigVolumeSpec{
+							Size: resource.MustParse("1Gi"),
+						},
+					},
+					HttpRouteSpec: feddemadevv1alpha1.SonarrHttpRouteSpec{
+						Enabled:   false,
+						ParentRef: gatewayv1.ParentReference{Name: "test-gateway"},
+					},
+					MediaLibraryRef: corev1.ObjectReference{
+						Kind:      "MediaLibrary",
+						Name:      libraryName,
+						Namespace: defaultNamespace,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sonarr)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, sonarr)).To(Succeed())
+			})
+			return sonarr
+		}
+
+		referencedSonarr := createSonarr("sonarr-references-watched-library", mediaLibrary.Name)
+		createSonarr("sonarr-references-another-library", "another-library")
+
+		reconciler := &SonarrReconciler{Client: k8sClient}
+		requests := reconciler.mapMediaLibraryToSonarrs(ctx, mediaLibrary)
+		Expect(requests).To(ConsistOf(reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(referencedSonarr),
+		}))
+	})
 })

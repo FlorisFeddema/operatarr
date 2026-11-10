@@ -58,6 +58,25 @@ func labelsForResource(name string) map[string]string {
 	}
 }
 
+func effectiveMediaPermissions(permissions *feddemadevv1alpha1.MediaPermissions) feddemadevv1alpha1.MediaPermissions {
+	effective := feddemadevv1alpha1.MediaPermissions{}
+	if permissions != nil {
+		effective = *permissions
+	}
+
+	if effective.RunAsUser == nil {
+		effective.RunAsUser = new(int64(5000))
+	}
+	if effective.RunAsGroup == nil {
+		effective.RunAsGroup = new(int64(5000))
+	}
+	if effective.FSGroup == nil {
+		effective.FSGroup = new(int64(5000))
+	}
+
+	return effective
+}
+
 func getLibraryVolumeName(name string) string {
 	return fmt.Sprintf("%s-media", name)
 }

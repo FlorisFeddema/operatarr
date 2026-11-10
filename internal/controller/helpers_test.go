@@ -6,6 +6,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 )
 
 var _ = Describe("helpers.mergeMap", func() {
@@ -69,5 +71,27 @@ var _ = Describe("helpers constants", func() {
 		combo := fmt.Sprintf("%s|%s", typeAvailable, typeDegraded)
 		Expect(combo).To(ContainSubstring("Available"))
 		Expect(combo).To(ContainSubstring("Degraded"))
+	})
+})
+
+var _ = Describe("effectiveMediaPermissions", func() {
+	It("uses the API defaults when permissions are omitted", func() {
+		permissions := effectiveMediaPermissions(nil)
+
+		Expect(*permissions.RunAsUser).To(Equal(int64(5000)))
+		Expect(*permissions.RunAsGroup).To(Equal(int64(5000)))
+		Expect(*permissions.FSGroup).To(Equal(int64(5000)))
+		Expect(permissions.SupplementalGroups).To(BeNil())
+	})
+
+	It("preserves configured values and defaults omitted fields", func() {
+		runAsUser := int64(1000)
+		permissions := effectiveMediaPermissions(&feddemadevv1alpha1.MediaPermissions{
+			RunAsUser: &runAsUser,
+		})
+
+		Expect(*permissions.RunAsUser).To(Equal(runAsUser))
+		Expect(*permissions.RunAsGroup).To(Equal(int64(5000)))
+		Expect(*permissions.FSGroup).To(Equal(int64(5000)))
 	})
 })

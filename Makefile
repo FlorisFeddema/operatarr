@@ -17,9 +17,8 @@ IMAGE_TAG_BASE ?= harbor.feddema.dev/operatarr
 IMG ?= $(IMAGE_TAG_BASE)/operatarr:$(VERSION)
 JOB_RUNNER_IMG ?= $(IMAGE_TAG_BASE)/job-runner:$(VERSION)
 
-# ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-# renovate: datasource=github-releases depName=kubernetes/kubernetes extractVersion=^v(?<version>.*)$
-ENVTEST_K8S_VERSION = 1.35.10
+# ENVTEST_K8S_VERSION selects the latest published envtest assets in this Kubernetes minor.
+ENVTEST_K8S_VERSION ?= 1.35.x!
 TEST_ARGS ?= -coverprofile cover.out
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)

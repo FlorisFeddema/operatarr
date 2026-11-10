@@ -59,6 +59,7 @@ type mediaLibraryReconcile struct {
 // +kubebuilder:rbac:groups=feddema.dev,resources=medialibraries,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=feddema.dev,resources=medialibraries/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=feddema.dev,resources=medialibraries/finalizers,verbs=update
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;get;list;watch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MediaLibraryReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -69,6 +70,7 @@ func (r *MediaLibraryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{},
 			builder.WithPredicates(genChangedPredicate),
 		).
+		Owns(&v1.Job{}).
 		Complete(r)
 }
 
@@ -345,6 +347,8 @@ func initializeJob(r *mediaLibraryReconcile) error {
 }
 
 func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
+	permissions := effectiveMediaPermissions(f.Spec.Permissions)
+
 	return &v1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      f.Name + "-pvc-init",
@@ -403,10 +407,10 @@ func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
 					NodeSelector:  map[string]string{"kubernetes.io/arch": "arm64"}, // TODO: remove once multi-arch support is added
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot:       new(true),
-						RunAsUser:          f.Spec.Permissions.RunAsUser,
-						RunAsGroup:         f.Spec.Permissions.RunAsGroup,
-						FSGroup:            f.Spec.Permissions.FSGroup,
-						SupplementalGroups: f.Spec.Permissions.SupplementalGroups,
+						RunAsUser:          permissions.RunAsUser,
+						RunAsGroup:         permissions.RunAsGroup,
+						FSGroup:            permissions.FSGroup,
+						SupplementalGroups: permissions.SupplementalGroups,
 						SeccompProfile: &corev1.SeccompProfile{
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
