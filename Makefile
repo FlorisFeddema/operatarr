@@ -7,6 +7,7 @@ VERSION ?= dev
 
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
+# renovate: datasource=github-releases depName=operator-framework/operator-sdk
 OPERATOR_SDK_VERSION ?= v1.39.1
 
 # IMAGE_TAG_BASE defines the docker.io namespace and part of the image name for remote images.
@@ -17,6 +18,7 @@ IMG ?= $(IMAGE_TAG_BASE)/operatarr:$(VERSION)
 JOB_RUNNER_IMG ?= $(IMAGE_TAG_BASE)/job-runner:$(VERSION)
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
+# renovate: datasource=github-releases depName=kubernetes/kubernetes extractVersion=^v(?<version>.*)$
 ENVTEST_K8S_VERSION = 1.35.0
 TEST_ARGS ?= -coverprofile cover.out
 
@@ -169,9 +171,13 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
+# renovate: datasource=go depName=sigs.k8s.io/kustomize/kustomize/v5
 KUSTOMIZE_VERSION ?= v5.4.3
+# renovate: datasource=go depName=sigs.k8s.io/controller-tools
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
-ENVTEST_VERSION ?= release-0.19
+# renovate: datasource=go depName=sigs.k8s.io/controller-runtime/tools/setup-envtest
+ENVTEST_VERSION ?= v0.24.1
+# renovate: datasource=go depName=github.com/golangci/golangci-lint/v2
 GOLANGCI_LINT_VERSION ?= v2.12.2
 
 .PHONY: kustomize

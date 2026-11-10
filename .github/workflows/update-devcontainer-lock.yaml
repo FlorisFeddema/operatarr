@@ -1,0 +1,39 @@
+name: Update devcontainer lockfile
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-lockfile:
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=npm depName=@devcontainers/cli
+      DEVCONTAINERS_CLI_VERSION: 0.90.0
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install Dev Container CLI
+        run: npm install --global "@devcontainers/cli@${DEVCONTAINERS_CLI_VERSION}"
+
+      - name: Update lockfile
+        run: devcontainer upgrade --workspace-folder .
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/update-devcontainer-lock
+          commit-message: "chore: update devcontainer lockfile"
+          title: "chore: update devcontainer lockfile"
+          body: "Refresh pinned Dev Container Feature versions and digests."
+          delete-branch: true

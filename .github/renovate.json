@@ -2,6 +2,29 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>FlorisFeddema/renovate-config",
-    "customManagers:dockerfileVersions"
+    "customManagers:dockerfileVersions",
+    "customManagers:makefileVersions",
+    "customManagers:githubActionsVersions"
+  ],
+  "packageRules": [
+    {
+      "matchDatasources": [
+        "docker"
+      ],
+      "pinDigests": true
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "quay.io/operator-framework/scorecard-test",
+      "managerFilePatterns": [
+        "/^config\\/scorecard\\/patches\\/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "image:\\s*quay\\.io/operator-framework/scorecard-test:(?<currentValue>[^@\\s]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ]
+    }
   ]
 }

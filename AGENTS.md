@@ -66,6 +66,9 @@ Sonarr and MediaLibrary resources; do not assume the other apps already exist.
 - `make generate` regenerates deepcopy code; `make manifests` regenerates CRDs
   and RBAC. Regeneration is not permission to change schemas or expand RBAC.
   If generation produces unexpected schema or permission changes, stop and ask.
+- If a required tool is missing or needs to be downloaded, ask the user whether
+  it may be added to the devcontainer before downloading it or changing its
+  configuration.
 - Update directly affected documentation and samples when behavior changes.
   Preserve existing user changes and never commit credentials.
 
