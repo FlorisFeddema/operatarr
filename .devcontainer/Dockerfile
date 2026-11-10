@@ -4,7 +4,7 @@ ARG TARGETARCH
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
 ARG KUBECTL_VERSION=v1.36.6
 # renovate: datasource=github-releases depName=kubernetes-sigs/kind
-ARG KIND_VERSION=v0.31.0
+ARG KIND_VERSION=v0.33.0
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
