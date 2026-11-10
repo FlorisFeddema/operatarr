@@ -19,7 +19,7 @@ JOB_RUNNER_IMG ?= $(IMAGE_TAG_BASE)/job-runner:$(VERSION)
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes extractVersion=^v(?<version>.*)$
-ENVTEST_K8S_VERSION = 1.35.0
+ENVTEST_K8S_VERSION = 1.35.10
 TEST_ARGS ?= -coverprofile cover.out
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
