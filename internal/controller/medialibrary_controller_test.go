@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
@@ -101,6 +102,18 @@ func getAvailableCondition(conds []metav1.Condition) *metav1.Condition {
 	return nil
 }
 
+func createMediaLibraryWithFinalizer(ctx context.Context, reconciler *MediaLibraryReconciler, ml *feddemadevv1alpha1.MediaLibrary) {
+	GinkgoHelper()
+	Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+
+	_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: ml.Name, Namespace: ml.Namespace}})
+	Expect(err).NotTo(HaveOccurred())
+
+	current := &feddemadevv1alpha1.MediaLibrary{}
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ml.Name, Namespace: ml.Namespace}, current)).To(Succeed())
+	Expect(current.Finalizers).To(ContainElement(finalizerName))
+}
+
 var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 	var (
 		ctx        context.Context
@@ -130,7 +143,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
 			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{PVCName: &pvcName}},
 		}
-		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: mlName, Namespace: ns}})
 		Expect(err).NotTo(HaveOccurred())
@@ -170,7 +183,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
 			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{PVCName: &pvcName}},
 		}
-		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: mlName, Namespace: ns}})
 		Expect(err).To(HaveOccurred())
@@ -200,7 +213,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
 			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{PVCName: &pvcName}},
 		}
-		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: mlName, Namespace: ns}})
 		Expect(err).To(HaveOccurred())
@@ -233,11 +246,25 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 		mlName := "ml-managed-resize"
 		ns := defaultNamespace
 
+		allowExpansion := true
+		storageClass := &storagev1.StorageClass{
+			ObjectMeta:           metav1.ObjectMeta{Name: mlName + "-storage"},
+			Provisioner:          "test.example.com/provisioner",
+			AllowVolumeExpansion: &allowExpansion,
+		}
+		Expect(k8sClient.Create(ctx, storageClass)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, storageClass)).To(Succeed())
+		})
+
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
-			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")}},
+			Spec: feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{
+				Size:             resource.MustParse("1Gi"),
+				StorageClassName: &storageClass.Name,
+			}},
 		}
-		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: mlName, Namespace: ns}})
 		Expect(err).NotTo(HaveOccurred())
@@ -245,6 +272,10 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 		pvc := &corev1.PersistentVolumeClaim{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, pvc)).To(Succeed())
 		Expect(pvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("1Gi")))
+
+		// Envtest has no volume controller to mark claims as bound before resizing.
+		pvc.Status.Phase = corev1.ClaimBound
+		Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
 
 		// Increase size
 		Eventually(func(g Gomega) {
@@ -269,7 +300,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
 			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi"), Annotations: map[string]string{"a": "1"}}},
 		}
-		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: mlName, Namespace: ns}})
 		Expect(err).NotTo(HaveOccurred())
@@ -305,32 +336,20 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
 			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi"), StorageClassName: &originalSC}},
 		}
-		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: mlName, Namespace: ns}})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Attempt to change StorageClass
-		Eventually(func(g Gomega) {
-			current := &feddemadevv1alpha1.MediaLibrary{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, current)).To(Succeed())
-			current.Spec.PVC.StorageClassName = &newSC
-			g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
-		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+		current := &feddemadevv1alpha1.MediaLibrary{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, current)).To(Succeed())
+		current.Spec.PVC.StorageClassName = &newSC
+		err = k8sClient.Update(ctx, current)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue())
+		Expect(err).To(MatchError(ContainSubstring("Value is immutable")))
 
-		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: mlName, Namespace: ns}})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("StorageClassName"))
-
-		// Validate condition
-		Eventually(func(g Gomega) {
-			updated := &feddemadevv1alpha1.MediaLibrary{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, updated)).To(Succeed())
-			cond := getAvailableCondition(updated.Status.Conditions)
-			g.Expect(cond).NotTo(BeNil())
-			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-			g.Expect(cond.Reason).To(Equal("StorageClassImmutable"))
-		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, current)).To(Succeed())
+		Expect(current.Spec.PVC.StorageClassName).To(Equal(&originalSC))
 
 		// Ensure PVC still has original storage class
 		pvc := &corev1.PersistentVolumeClaim{}

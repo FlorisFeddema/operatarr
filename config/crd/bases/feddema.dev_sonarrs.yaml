@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.1
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: sonarrs.feddema.dev
 spec:
   group: feddema.dev
@@ -93,9 +93,6 @@ spec:
                     type: boolean
                   hostname:
                     type: string
-                    x-kubernetes-validations:
-                    - message: hostname must be set if httpRouteSpec.enabled is true
-                      rule: self.enabled == false || self.hostname != ''
                   parentRef:
                     description: |-
                       ParentReference identifies an API object (usually a Gateway) that can be considered
@@ -248,6 +245,9 @@ spec:
                 - hostname
                 - parentRef
                 type: object
+                x-kubernetes-validations:
+                - message: hostname must be set if httpRouteSpec.enabled is true
+                  rule: self.enabled == false || self.hostname != ''
               sonarrPodTemplateSpec:
                 properties:
                   affinity:

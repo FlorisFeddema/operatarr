@@ -31,6 +31,7 @@ type SonarrSpec struct {
 	// +kubebuilder:validation:Required
 	PodSpec SonarrPodTemplateSpec `json:"sonarrPodTemplateSpec"`
 
+	// +kubebuilder:validation:XValidation:rule="self.enabled == false || self.hostname != ''",message="hostname must be set if httpRouteSpec.enabled is true"
 	HttpRouteSpec SonarrHttpRouteSpec `json:"sonarrHttpRouteSpec"`
 
 	// +kubebuilder:validation:Required
@@ -83,7 +84,6 @@ type SonarrHttpRouteSpec struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// +kubebuilder:validation:XValidation:rule="self.enabled == false || self.hostname != ''",message="hostname must be set if httpRouteSpec.enabled is true"
 	Hostname string `json:"hostname"`
 
 	ParentRef v1.ParentReference `json:"parentRef"`

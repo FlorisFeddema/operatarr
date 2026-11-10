@@ -43,7 +43,7 @@ jobs:
         run: go build -v ./...
 
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out -covermode=atomic $(go list ./... | grep -v /e2e)
+        run: make test TEST_ARGS="-v -race -coverprofile=coverage.out -covermode=atomic"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

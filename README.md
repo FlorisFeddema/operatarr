@@ -20,6 +20,12 @@ TODO: Add examples for running and using operatarr.
 
 Argo Workflows and Argo Events manifests for running this repository's CI from an external Argo installation live in [ci/argo/README.md](ci/argo/README.md).
 
+GitHub Actions runs `make test` with race detection and coverage enabled. This
+downloads the Makefile's pinned envtest binaries and runs unit and controller
+tests against an isolated local API server; no existing cluster is required.
+The cluster-dependent e2e suite is excluded and remains available through
+`make test-e2e` against a configured kind cluster.
+
 ## Contributing
 
 Contributions are welcome! Please open issues or submit pull requests.
