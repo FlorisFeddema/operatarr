@@ -4,7 +4,7 @@
     entrypoint:
     - scorecard-test
     - olm-bundle-validation
-    image: quay.io/operator-framework/scorecard-test:v1.39.1@sha256:b2276662d3718aa75191bd205738b899c61b7e4d3ebe1e0564c62e77d9d5f7cc
+    image: quay.io/operator-framework/scorecard-test:v1.39.2@sha256:db3d49aa190e8555d1b7c772d9748987169a2013c4663bc2bdaec2d8a136f7f6
     labels:
       suite: olm
       test: olm-bundle-validation-test
@@ -14,7 +14,7 @@
     entrypoint:
     - scorecard-test
     - olm-crds-have-validation
-    image: quay.io/operator-framework/scorecard-test:v1.39.1@sha256:b2276662d3718aa75191bd205738b899c61b7e4d3ebe1e0564c62e77d9d5f7cc
+    image: quay.io/operator-framework/scorecard-test:v1.39.2@sha256:db3d49aa190e8555d1b7c772d9748987169a2013c4663bc2bdaec2d8a136f7f6
     labels:
       suite: olm
       test: olm-crds-have-validation-test
@@ -24,7 +24,7 @@
     entrypoint:
     - scorecard-test
     - olm-crds-have-resources
-    image: quay.io/operator-framework/scorecard-test:v1.39.1@sha256:b2276662d3718aa75191bd205738b899c61b7e4d3ebe1e0564c62e77d9d5f7cc
+    image: quay.io/operator-framework/scorecard-test:v1.39.2@sha256:db3d49aa190e8555d1b7c772d9748987169a2013c4663bc2bdaec2d8a136f7f6
     labels:
       suite: olm
       test: olm-crds-have-resources-test
@@ -34,7 +34,7 @@
     entrypoint:
     - scorecard-test
     - olm-spec-descriptors
-    image: quay.io/operator-framework/scorecard-test:v1.39.1@sha256:b2276662d3718aa75191bd205738b899c61b7e4d3ebe1e0564c62e77d9d5f7cc
+    image: quay.io/operator-framework/scorecard-test:v1.39.2@sha256:db3d49aa190e8555d1b7c772d9748987169a2013c4663bc2bdaec2d8a136f7f6
     labels:
       suite: olm
       test: olm-spec-descriptors-test
@@ -44,7 +44,7 @@
     entrypoint:
     - scorecard-test
     - olm-status-descriptors
-    image: quay.io/operator-framework/scorecard-test:v1.39.1@sha256:b2276662d3718aa75191bd205738b899c61b7e4d3ebe1e0564c62e77d9d5f7cc
+    image: quay.io/operator-framework/scorecard-test:v1.39.2@sha256:db3d49aa190e8555d1b7c772d9748987169a2013c4663bc2bdaec2d8a136f7f6
     labels:
       suite: olm
       test: olm-status-descriptors-test
