@@ -8,7 +8,7 @@ VERSION ?= dev
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 # renovate: datasource=github-releases depName=operator-framework/operator-sdk
-OPERATOR_SDK_VERSION ?= v1.39.1
+OPERATOR_SDK_VERSION ?= v1.39.2
 
 # IMAGE_TAG_BASE defines the docker.io namespace and part of the image name for remote images.
 IMAGE_TAG_BASE ?= harbor.feddema.dev/operatarr
