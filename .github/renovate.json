@@ -12,6 +12,18 @@
         "docker"
       ],
       "pinDigests": true
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "groupName": "go dependencies",
+      "groupSlug": "go-dependencies"
     }
   ],
   "customManagers": [
