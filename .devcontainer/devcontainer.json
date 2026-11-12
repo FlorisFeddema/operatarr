@@ -5,14 +5,14 @@
     "context": ".."
   },
   "features": {
-    "ghcr.io/devcontainers/features/go:1": {
+    "ghcr.io/devcontainers/features/go:1@sha256:2f2ed290df9a5f1841340b14cb8a287cf0574a816967dd84dcfe42fdd97b897e": {
       "version": "1.27",
       "installGoTools": true
     },
-    "ghcr.io/jsburckhardt/devcontainer-features/rtk:1.0.0": {
+    "ghcr.io/jsburckhardt/devcontainer-features/rtk:1.0.0@sha256:f393df8514c943c260e22e0e89fc224e3ba0ca6eeccbd6c562741cf8d7acfde4": {
       "version": "v0.45.0"
     },
-    "ghcr.io/devcontainer-community/devcontainer-features/ripgrep:1.0.3": {
+    "ghcr.io/devcontainer-community/devcontainer-features/ripgrep:1.0.3@sha256:5fed7bcc70a222974726a47146f257b58cc96240513ed424793457e39bd7448a": {
       "version": "15.2.0"
     }
   },
