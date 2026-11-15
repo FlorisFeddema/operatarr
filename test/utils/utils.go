@@ -48,11 +48,14 @@ func InstallPrometheusOperator() error {
 
 // Run executes the provided command within this context
 func Run(cmd *exec.Cmd) ([]byte, error) {
-	dir, _ := GetProjectDir()
+	dir, err := GetProjectDir()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get project directory: %w", err)
+	}
 	cmd.Dir = dir
 
 	if err := os.Chdir(cmd.Dir); err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %s\n", err)
+		return nil, fmt.Errorf("unable to change directory to %q: %w", cmd.Dir, err)
 	}
 
 	cmd.Env = append(os.Environ(), "GO111MODULE=on")
@@ -60,7 +63,7 @@ func Run(cmd *exec.Cmd) ([]byte, error) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
+		return output, fmt.Errorf("%s failed: %w; output: %s", command, err, string(output))
 	}
 
 	return output, nil

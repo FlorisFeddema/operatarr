@@ -109,7 +109,13 @@ func main() {
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	config, err := ctrl.GetConfig()
+	if err != nil {
+		setupLog.Error(err, "unable to load Kubernetes configuration")
+		os.Exit(1)
+	}
+
+	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme:                        scheme,
 		Metrics:                       metricsServerOptions,
 		WebhookServer:                 webhookServer,

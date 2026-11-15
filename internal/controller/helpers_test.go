@@ -3,12 +3,59 @@ package controller
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
+	"github.com/FlorisFeddema/operatarr/internal/utils"
 )
+
+var _ = Describe("utils.MergeConditions", func() {
+	It("updates reason and message without changing transition time when status is unchanged", func() {
+		transitionTime := metav1.NewTime(time.Unix(1, 0))
+		conditions := []metav1.Condition{{
+			Type:               typeAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             "Waiting",
+			Message:            "waiting for dependency",
+			LastTransitionTime: transitionTime,
+		}}
+
+		utils.MergeConditions(&conditions, metav1.Condition{
+			Type:    typeAvailable,
+			Status:  metav1.ConditionFalse,
+			Reason:  "DependencyChanged",
+			Message: "dependency is still unavailable",
+		})
+
+		Expect(conditions).To(HaveLen(1))
+		Expect(conditions[0].Reason).To(Equal("DependencyChanged"))
+		Expect(conditions[0].Message).To(Equal("dependency is still unavailable"))
+		Expect(conditions[0].LastTransitionTime).To(Equal(transitionTime))
+	})
+
+	It("resets transition time when status changes", func() {
+		transitionTime := metav1.NewTime(time.Unix(1, 0))
+		conditions := []metav1.Condition{{
+			Type:               typeAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             "Waiting",
+			LastTransitionTime: transitionTime,
+		}}
+
+		utils.MergeConditions(&conditions, metav1.Condition{
+			Type:   typeAvailable,
+			Status: metav1.ConditionTrue,
+			Reason: "Ready",
+		})
+
+		Expect(conditions[0].Status).To(Equal(metav1.ConditionTrue))
+		Expect(conditions[0].LastTransitionTime).NotTo(Equal(transitionTime))
+	})
+})
 
 var _ = Describe("helpers.mergeMap", func() {
 	Context("when left is nil", func() {
@@ -20,6 +67,7 @@ var _ = Describe("helpers.mergeMap", func() {
 			result["b"] = "2"
 			Expect(right).To(HaveKeyWithValue("b", "2"))
 		})
+
 		It("returns nil when both left and right are nil", func() {
 			var left map[string]string
 			var right map[string]string

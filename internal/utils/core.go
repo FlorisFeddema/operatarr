@@ -43,10 +43,7 @@ func RunConcurrently(fnList ...func() error) error {
 	}()
 
 	// Collect all the errors and return them as a single error
-	if err := errors.Join(channelToSlice(errorList)...); err != nil {
-		return err
-	}
-	return nil
+	return errors.Join(channelToSlice(errorList)...)
 }
 
 func channelToSlice[T any](c chan T) []T {
@@ -60,17 +57,19 @@ func channelToSlice[T any](c chan T) []T {
 func MergeConditions(i *[]metav1.Condition, cond metav1.Condition) {
 	existingConditions := *i
 	now := metav1.Now()
-	cond.LastTransitionTime = now
 
 	for idx, c := range existingConditions {
 		if c.Type == cond.Type {
-			// Only update the condition if the status has changed
-			if c.Status != cond.Status {
-				existingConditions[idx] = cond
+			if c.Status == cond.Status {
+				cond.LastTransitionTime = c.LastTransitionTime
+			} else {
+				cond.LastTransitionTime = now
 			}
+			existingConditions[idx] = cond
 			return
 		}
 	}
+	cond.LastTransitionTime = now
 	*i = append(existingConditions, cond)
 }
 

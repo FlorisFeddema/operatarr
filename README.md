@@ -33,6 +33,25 @@ The current engineering intake and prioritized follow-up work are tracked in
 
 Contributions are welcome! Please open issues or submit pull requests.
 
+### Logging and errors
+
+The operator and jobrunner use structured zap logging through `logr`. Both
+executables expose the standard zap flags. Use `--zap-devel=false` for
+production JSON output and `--zap-log-level=debug` when diagnosing routine
+reconciliation steps. Existing development-mode defaults are unchanged.
+
+Info logs describe startup, lifecycle transitions, and successful resource
+changes; no-op reconciliation and dependency checks are debug logs. Returned
+reconciliation failures are logged once by controller-runtime, which applies
+its retry backoff. A deleted primary resource is not an error; missing
+dependencies still surface as errors and through the existing status conditions.
+Failed initialization Jobs retain their status-driven behavior and are logged
+when their failure condition changes, rather than on every reconciliation.
+The jobrunner logs initialization errors once and exits nonzero.
+
+Implementation conventions for contributors and coding agents are in
+[AGENTS.md](AGENTS.md#error-handling-and-logging).
+
 ### Development container
 
 Open the repository in a Dev Container to use Go, common Go development tools,

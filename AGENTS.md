@@ -55,6 +55,40 @@ Sonarr and MediaLibrary resources; do not assume the other apps already exist.
 - Preserve optional Gateway API behavior: an unavailable Gateway API must not
   make otherwise supported resources depend on HTTPRoute creation.
 
+## Error handling and logging
+
+- Use the existing `logr`/controller-runtime zap logger; do not add another
+  logging framework. Controllers use `log.FromContext(ctx)` so logs retain the
+  controller, resource identity, and reconcile ID. Pass the configured logger
+  into jobrunner helpers; never use an uninitialized package-level logger.
+- Return errors from helpers rather than logging and returning the same error.
+  Add operation and resource/path context with `fmt.Errorf("...: %w", err)`;
+  preserve causes for `errors.Is`, `errors.As`, and Kubernetes error predicates.
+  Use `errors.Join` only for independent failures, including a primary failure
+  plus a failed status update, not to attach explanatory text.
+- Controller-runtime logs returned reconciliation errors and handles backoff.
+  Do not log them again inside `Reconcile` or its helpers. Log errors locally
+  only when they cannot be returned: watch mapping callbacks and status-driven
+  failed Jobs. Log a failed Job once when its failure condition changes; if
+  persisting that condition fails, return both errors without logging locally.
+- Ignore NotFound only while loading the primary resource, since it may have
+  been deleted. Missing dependencies must still surface through existing
+  conditions and error/requeue behavior. Do not turn API failures into missing
+  resources or change retry policy just to suppress logs.
+- Use `V(1).Info` for routine reconciliation, checks, waits, and optional skips.
+  Use `Info` for startup, lifecycle transitions, and successful resource changes.
+  Use `logResourceOperation` for successful CreateOrPatch results; no-op or failed
+  operations must not produce success logs. Use stable messages and structured
+  fields such as `kind`, `resource`, `operation`, `job`, `reason`, and `path`.
+  Never log credentials, Secret contents, environment values, or entire specs.
+- Keep `os.Exit` at executable boundaries after logging a concrete error once.
+  Helpers return errors; panic/Must helpers are only for programmer invariants
+  such as constant quantities and static scheme registration, never user input.
+  Filesystem initialization must preserve stat/mkdir causes and must not report
+  failed creates as successes.
+- Test preserved error causes, primary versus dependency NotFound, combined
+  status failures, retry/idempotency behavior, and duplicate/success log counts.
+
 ## Implementation and generated files
 
 - Make focused changes using existing Go, controller-runtime, and test patterns.
@@ -74,11 +108,17 @@ Sonarr and MediaLibrary resources; do not assume the other apps already exist.
 
 ## Validation
 
+- After implementing each feature, run the full unit test suite (`make test`)
+  and linter (`make lint`). Fix test failures and lint findings, and rerun the
+  checks until they pass before marking the task complete.
+- Never skip either check without explicit human approval. If a check cannot
+  run or pass, report the blocker and leave the task incomplete unless the
+  human explicitly authorizes skipping that check.
 - For Go changes, format touched code, run relevant focused tests, then run
   `make vet` and `go build ./...`. Add or update tests for changed behavior,
   including idempotency and error/deletion paths where relevant.
-- For changes spanning controllers or approved API changes, also run `make test`.
-  Consult the [Makefile](Makefile) and
+- For non-feature changes spanning controllers or approved API changes, also run
+  `make test`. Consult the [Makefile](Makefile) and
   [controller test suite](internal/controller/suite_test.go) when selecting
   focused tests and configuring envtest assets.
 - `make test` and `make build` also regenerate artifacts. Do not treat them as
@@ -90,5 +130,6 @@ Sonarr and MediaLibrary resources; do not assume the other apps already exist.
 - E2E requires a configured cluster and working container engine; follow the
   [README](README.md) and obtain approval before running it. Do not substitute a
   live cluster for missing envtest assets.
-- Documentation-only changes do not require Go tests. Report what was validated
-  and any blocked checks accurately; never claim an unrun check passed.
+- Documentation-only, non-feature changes do not require Go tests. Report what
+  was validated and any blocked checks accurately; never claim an unrun check
+  passed.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/FlorisFeddema/operatarr/jobrunner/medialibrary"
@@ -26,23 +27,33 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	log := zap.New(zap.UseFlagOptions(&opts))
+	log := zap.New(zap.UseFlagOptions(&opts)).WithName("jobrunner")
 
-	switch mode {
-	case OperationMode.MediaLibrary:
-		runMediaLibraryInitializer(log)
-	default:
-		log.Error(nil, "unknown mode: "+mode)
+	if err := run(mode, log); err != nil {
+		log.Error(err, "jobrunner failed", "mode", mode)
 		os.Exit(1)
 	}
 }
 
-func runMediaLibraryInitializer(log logr.Logger) {
+func run(mode string, log logr.Logger) error {
+	switch mode {
+	case OperationMode.MediaLibrary:
+		return runMediaLibraryInitializer(log)
+	default:
+		return fmt.Errorf("unknown mode %q", mode)
+	}
+}
+
+func runMediaLibraryInitializer(log logr.Logger) error {
 	log.Info("starting medialibrary initializer")
 	// Initialize the media library
 	initOptions := &medialibrary.Options{
 		EnableConfigureLibrary: true,
-		LibraryRootPath:        "/library",
+		LibraryRootPath:        medialibrary.DefaultLibraryRootPath,
 	}
-	medialibrary.MediaLibrary(initOptions)
+	if err := medialibrary.MediaLibrary(log, initOptions); err != nil {
+		return fmt.Errorf("unable to initialize MediaLibrary: %w", err)
+	}
+	log.Info("MediaLibrary initialization completed")
+	return nil
 }

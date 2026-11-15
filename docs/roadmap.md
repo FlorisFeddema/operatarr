@@ -25,17 +25,17 @@ repository currently implements Sonarr and MediaLibrary resources.
 ### Reconciliation correctness
 
 - Optional Sonarr pod security context and MediaLibrary permission fields are
-  dereferenced by controller code without nil handling. API-valid resources
-  can therefore panic during reconciliation.
-- The MediaLibrary controller creates an initialization Job but does not watch
-  Jobs. A completed Job may not trigger a reconcile to update MediaLibrary
-  status. Sonarr also references a MediaLibrary without a watch on that
-  dependency.
-- Reconciliation status needs consistent semantics. For example, a missing
-  pre-existing PVC currently marks a MediaLibrary initialized even though it
-  cannot be used.
-- Condition merging only replaces an existing condition when its status
-  changes; reason and message updates with unchanged status may be lost.
+  handled safely, with documented permission defaults applied when omitted.
+- MediaLibrary initialization Jobs and referenced MediaLibrary changes enqueue
+  reconciliations so status and dependent resources can catch up.
+- Missing or invalid pre-existing PVCs keep MediaLibrary uninitialized and
+  report an unavailable condition; dependency errors use controller-runtime's
+  rate-limited retry behavior.
+- Sonarr reports unavailable dependencies and reconciliation failures in its
+  status. Condition reason and message updates are retained without resetting
+  transition time unless the condition status changes.
+- Sonarr skips HTTPRoute reconciliation when Gateway API is unavailable and
+  continues reconciling its other resources.
 
 ### Storage and integration
 
@@ -44,9 +44,8 @@ repository currently implements Sonarr and MediaLibrary resources.
 - The current PersistentVolume reconciliation does not define a backing volume
   source. The intended storage design, cross-namespace model, and deletion
   behavior need to be decided before implementation.
-- HTTPRoute is enabled by default, while reconciliation fails if Gateway API is
-  unavailable. This makes an optional integration a blocker for other Sonarr
-  resources.
+- HTTPRoute is enabled by default, but skipped if Gateway API is unavailable;
+  other Sonarr resources continue reconciling.
 
 ### API, documentation, and product scope
 
@@ -76,12 +75,15 @@ repository currently implements Sonarr and MediaLibrary resources.
   permission fields. Preserve the documented permission defaults where
   possible.
 - [x] Add focused tests for omitted permission fields and default values.
-- [ ] Add focused tests for the remaining status and error paths.
+- [x] Add focused tests for the remaining status and error paths.
 - [x] Observe initialization Job changes and reconcile Sonarr when its
   referenced MediaLibrary changes.
-- [ ] Define retry behavior and conditions for resources waiting on dependencies.
-- [ ] Make Gateway API availability non-blocking for Sonarr features that do not
-  require HTTPRoute.
+- [x] Define retry behavior and conditions for resources waiting on dependencies:
+  report unavailable status and return errors for controller-runtime's
+  rate-limited retries; dependency watches trigger reconciliation when the
+  dependency changes.
+- [x] Make Gateway API availability non-blocking for Sonarr features that do
+  not require HTTPRoute.
 
 **RBAC approval:** Approved for manager `batch/jobs` permissions limited to
 `create`, `get`, `list`, and `watch`, required by initialization and Job watches.
@@ -101,9 +103,9 @@ policy.
 
 ### 3. Status and API correctness
 
-- [ ] Ensure initialization and readiness status never report success for
+- [x] Ensure initialization and readiness status never report success for
   unusable dependencies.
-- [ ] Update existing conditions when their reason or message changes, while
+- [x] Update existing conditions when their reason or message changes, while
   preserving transition-time semantics.
 - [ ] Correct MediaLibrary PVC validation and printer columns.
 - [ ] Report observed generation consistently where appropriate.

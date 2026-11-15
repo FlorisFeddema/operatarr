@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/FlorisFeddema/operatarr/internal/utils"
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -111,7 +112,11 @@ func (r *SonarrReconciler) mapMediaLibraryToSonarrs(ctx context.Context, object 
 	for i := range sonarrs.Items {
 		sonarr := &sonarrs.Items[i]
 		ref := sonarr.Spec.MediaLibraryRef
-		if ref.Kind != "MediaLibrary" || ref.Name != mediaLibrary.Name || ref.Namespace != mediaLibrary.Namespace {
+		namespace := ref.Namespace
+		if namespace == "" {
+			namespace = sonarr.Namespace
+		}
+		if ref.Kind != mediaLibraryKind || ref.Name != mediaLibrary.Name || namespace != mediaLibrary.Namespace {
 			continue
 		}
 
@@ -124,7 +129,7 @@ func (r *SonarrReconciler) mapMediaLibraryToSonarrs(ctx context.Context, object 
 // move the current state of the cluster closer to the desired state.
 func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := lg.FromContext(ctx)
-	log.Info("Starting reconcile iteration for Sonarr", "req", req)
+	log.V(1).Info("Starting reconcile iteration", "resource", req.NamespacedName)
 
 	reconcileHandler := sonarrReconcile{}
 	reconcileHandler.SonarrReconciler = *r
@@ -134,18 +139,13 @@ func (r *SonarrReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	reconcileHandler.object.Namespace = req.Namespace
 
 	err := reconcileHandler.reconcile()
-	if err != nil {
-		log.Error(err, "Failed to reconcile Sonarr")
-	} else {
-		log.Info("Successfully reconciled Sonarr")
-	}
 	return ctrl.Result{}, err
 }
 
 func (r *sonarrReconcile) reconcile() error {
 	// Load the object desired state based on resource, operator config and default values.
 	if err := r.loadDesiredState(); err != nil {
-		return err
+		return client.IgnoreNotFound(err)
 	}
 
 	// Preconcile step to handle deletion of resources
@@ -153,53 +153,82 @@ func (r *sonarrReconcile) reconcile() error {
 		return err
 	}
 
-	r.log.Info("Running Sonarr reconcilers")
-	// TODO: add step to create media volume based on MediaLibrary.
-	if err := r.reconcileHeadlessService(); err != nil {
-		return err
-	}
-	if err := r.reconcileService(); err != nil {
-		return err
-	}
-	if err := r.reconcileHttpRoute(); err != nil {
-		return err
+	if err := r.loadMediaLibrary(); err != nil {
+		return errors.Join(err, r.setAvailableCondition(metav1.ConditionFalse, "MediaLibraryUnavailable", err.Error()))
 	}
 
-	if err := r.reconcileMediaPersistentVolume(); err != nil {
-		return err
+	r.log.V(1).Info("Running Sonarr reconcilers")
+	steps := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "headless Service", run: r.reconcileHeadlessService},
+		{name: "Service", run: r.reconcileService},
+		{name: "HTTPRoute", run: r.reconcileHttpRoute},
+		{name: "media PersistentVolume", run: r.reconcileMediaPersistentVolume},
+		{name: "StatefulSet", run: r.reconcileStatefulSet},
+	}
+	for _, step := range steps {
+		if err := step.run(); err != nil {
+			err = fmt.Errorf("unable to reconcile %s: %w", step.name, err)
+			statusErr := r.setAvailableCondition(metav1.ConditionFalse, "ReconciliationFailed", err.Error())
+			return errors.Join(err, statusErr)
+		}
 	}
 
-	if err := r.reconcileStatefulSet(); err != nil {
-		return err
-	}
-
-	return nil
+	return r.setAvailableCondition(metav1.ConditionTrue, "ResourcesReconciled", "Sonarr resources have been reconciled")
 }
 
 // loadDesiredState loads the desired state of the Sonarr resource
 func (r *sonarrReconcile) loadDesiredState() error {
 	if err := r.Get(r.ctx, client.ObjectKeyFromObject(&r.object), &r.object); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			r.log.Error(err, "unable to fetch Sonarr")
-			return err
-		}
-		// Resource not found, could have been deleted before the reconcile request.
-		return fmt.Errorf("sonarr resource not found. Ignoring since object must be deleted")
+		return fmt.Errorf("unable to fetch Sonarr %s: %w", client.ObjectKeyFromObject(&r.object), err)
 	}
 
-	// Get MediaLibrary referenced by Sonarr
-	mediaLibrary, err := getMediaLibraryFromRef(r.ctx, r.Client, r.object.Spec.MediaLibraryRef)
+	r.log.V(1).Info("Desired state loaded")
+	return nil
+}
+
+func (r *sonarrReconcile) loadMediaLibrary() error {
+	ref := r.object.Spec.MediaLibraryRef
+	if ref.Namespace == "" {
+		ref.Namespace = r.object.Namespace
+	}
+	mediaLibrary, err := getMediaLibraryFromRef(r.ctx, r.Client, ref)
 	if err != nil {
-		r.log.Error(err, "unable to get MediaLibrary from reference", "MediaLibraryRef", r.object.Spec.MediaLibraryRef)
-		return err
+		return fmt.Errorf("unable to get MediaLibrary from reference: %w", err)
 	}
 	r.mediaLibrary = mediaLibrary
 
 	if !mediaLibrary.Status.Initialized {
-		return errors.New("media library not initialized")
+		return errors.New("referenced MediaLibrary is not initialized")
 	}
 
-	r.log.Info("Desired state loaded")
+	return nil
+}
+
+func (r *sonarrReconcile) setAvailableCondition(status metav1.ConditionStatus, reason, message string) error {
+	for _, condition := range r.object.Status.Conditions {
+		if condition.Type == typeAvailable &&
+			condition.Status == status &&
+			condition.Reason == reason &&
+			condition.Message == message &&
+			condition.ObservedGeneration == r.object.Generation {
+			return nil
+		}
+	}
+
+	condition := metav1.Condition{
+		Type:               typeAvailable,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: r.object.Generation,
+	}
+	utils.MergeConditions(&r.object.Status.Conditions, condition)
+	if err := r.Status().Update(r.ctx, &r.object); err != nil {
+		return fmt.Errorf("unable to update Sonarr status condition: %w", err)
+	}
 	return nil
 }
 
@@ -212,8 +241,7 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 			return true, errors.New("unable to add finalizer to sonarr")
 		}
 		if err := r.Update(r.ctx, &r.object); err != nil {
-			r.log.Error(err, "failed to update with finalizer")
-			return true, err
+			return true, fmt.Errorf("unable to update Sonarr finalizer: %w", err)
 		}
 		return true, nil
 	}
@@ -237,7 +265,7 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 }
 
 func (r *sonarrReconcile) reconcileStatefulSet() error {
-	r.log.Info("Creating or patching StatefulSet")
+	r.log.V(1).Info("Creating or patching StatefulSet")
 	ss := &appsv1.StatefulSet{}
 	ss.Name = r.object.Name
 	ss.Namespace = r.object.Namespace
@@ -258,7 +286,7 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, ss, func() error {
 		if err := ctrl.SetControllerReference(&r.object, ss, r.Scheme); err != nil {
-			return errors.Join(err, errors.New("unable to set controller reference for StatefulSet"))
+			return fmt.Errorf("unable to set controller reference for StatefulSet: %w", err)
 		}
 
 		ss.SetLabels(mergeMap(ss.GetLabels(), labels))
@@ -381,14 +409,15 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 		return nil
 	})
 	if err != nil {
-		return errors.Join(err, fmt.Errorf("unable to create StatefulSet with status %s", opResult))
+		return fmt.Errorf("unable to create or patch StatefulSet %s: %w", client.ObjectKeyFromObject(ss), err)
 	}
 
+	logResourceOperation(r.log, "StatefulSet", ss, opResult)
 	return nil
 }
 
 func (r *sonarrReconcile) reconcileService() error {
-	r.log.Info("Creating or patching Service")
+	r.log.V(1).Info("Creating or patching Service")
 	svc := &corev1.Service{}
 	svc.Name = r.object.Name
 	svc.Namespace = r.object.Namespace
@@ -396,7 +425,7 @@ func (r *sonarrReconcile) reconcileService() error {
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, svc, func() error {
 		if err := ctrl.SetControllerReference(&r.object, svc, r.Scheme); err != nil {
-			return errors.Join(err, errors.New("unable to set controller owner reference for Service"))
+			return fmt.Errorf("unable to set controller owner reference for Service: %w", err)
 		}
 
 		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
@@ -414,14 +443,15 @@ func (r *sonarrReconcile) reconcileService() error {
 		return nil
 	})
 	if err != nil {
-		return errors.Join(err, fmt.Errorf("unable to create or patch Service with status %s", opResult))
+		return fmt.Errorf("unable to create or patch Service %s: %w", client.ObjectKeyFromObject(svc), err)
 	}
 
+	logResourceOperation(r.log, "Service", svc, opResult)
 	return nil
 }
 
 func (r *sonarrReconcile) reconcileHeadlessService() error {
-	r.log.Info("Creating or patching Headless Service")
+	r.log.V(1).Info("Creating or patching headless Service")
 	svc := &corev1.Service{}
 	svc.Name = getHeadlessServiceName(r.object.Name)
 	svc.Namespace = r.object.Namespace
@@ -429,7 +459,7 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, svc, func() error {
 		if err := ctrl.SetControllerReference(&r.object, svc, r.Scheme); err != nil {
-			return errors.Join(err, errors.New("unable to set controller owner reference for Headless Service"))
+			return fmt.Errorf("unable to set controller owner reference for headless Service: %w", err)
 		}
 
 		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
@@ -448,9 +478,10 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 		return nil
 	})
 	if err != nil {
-		return errors.Join(err, fmt.Errorf("unable to create or patch Headless Service with status %s", opResult))
+		return fmt.Errorf("unable to create or patch headless Service %s: %w", client.ObjectKeyFromObject(svc), err)
 	}
 
+	logResourceOperation(r.log, "Service", svc, opResult)
 	return nil
 }
 
@@ -458,9 +489,10 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 	if !r.object.Spec.HttpRouteSpec.Enabled {
 		return nil
 	}
-	r.log.Info("Creating or patching HTTP Route")
+	r.log.V(1).Info("Creating or patching HTTPRoute")
 	if !r.GatewayAPIAvailable {
-		return errors.New("GatewayAPI is not available in the cluster, cannot create HTTP Route")
+		r.log.V(1).Info("Gateway API is unavailable; skipping HTTPRoute while continuing Sonarr reconciliation")
+		return nil
 	}
 
 	route := &gatewayv1.HTTPRoute{}
@@ -470,7 +502,7 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, route, func() error {
 		if err := ctrl.SetControllerReference(&r.object, route, r.Scheme); err != nil {
-			return errors.Join(err, errors.New("unable to set controller owner reference for HTTP Route"))
+			return fmt.Errorf("unable to set controller owner reference for HTTPRoute: %w", err)
 		}
 
 		route.SetLabels(mergeMap(route.GetLabels(), labels))
@@ -500,19 +532,20 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 		return nil
 	})
 	if err != nil {
-		return errors.Join(err, fmt.Errorf("unable to create or patch Headless Service with status %s", opResult))
+		return fmt.Errorf("unable to create or patch HTTPRoute %s: %w", client.ObjectKeyFromObject(route), err)
 	}
 
+	logResourceOperation(r.log, "HTTPRoute", route, opResult)
 	return nil
 }
 
 func (r *sonarrReconcile) reconcileMediaPersistentVolume() error {
 	if r.mediaLibrary.Spec.CrossNamespaceAccess {
-		r.log.Info("MediaLibrary uses cross-namespace access, skipping PersistentVolume creation")
+		r.log.V(1).Info("MediaLibrary uses cross-namespace access, skipping PersistentVolume creation")
 		return nil
 	}
 
-	r.log.Info("Creating or patching Media Persistent Volume")
+	r.log.V(1).Info("Creating or patching media PersistentVolume")
 	pv := &corev1.PersistentVolume{}
 	pv.Name = getLibraryVolumeName(r.object.Name)
 	pv.Namespace = r.object.Namespace
@@ -520,12 +553,12 @@ func (r *sonarrReconcile) reconcileMediaPersistentVolume() error {
 
 	mediaPvc, err := getMediaLibraryPVC(r.Client, r.ctx, *r.mediaLibrary)
 	if err != nil {
-		return errors.Join(err, fmt.Errorf("unable to get MediaLibrary PVC for PersistentVolume creation"))
+		return fmt.Errorf("unable to get MediaLibrary PVC for PersistentVolume creation: %w", err)
 	}
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, pv, func() error {
 		if err := ctrl.SetControllerReference(&r.object, pv, r.Scheme); err != nil {
-			return errors.Join(err, errors.New("unable to set controller owner reference for Media Persistent Volume"))
+			return fmt.Errorf("unable to set controller owner reference for media PersistentVolume: %w", err)
 		}
 
 		pv.SetLabels(mergeMap(pv.GetLabels(), labels))
@@ -537,8 +570,9 @@ func (r *sonarrReconcile) reconcileMediaPersistentVolume() error {
 		return nil
 	})
 	if err != nil {
-		return errors.Join(err, fmt.Errorf("unable to create or patch Media Persistent Volume with status %s", opResult))
+		return fmt.Errorf("unable to create or patch media PersistentVolume %s: %w", client.ObjectKeyFromObject(pv), err)
 	}
 
+	logResourceOperation(r.log, "PersistentVolume", pv, opResult)
 	return nil
 }

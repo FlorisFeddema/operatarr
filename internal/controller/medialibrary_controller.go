@@ -24,9 +24,12 @@ import (
 	"slices"
 
 	"github.com/FlorisFeddema/operatarr/internal/utils"
+	"github.com/FlorisFeddema/operatarr/jobrunner/medialibrary"
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -78,7 +81,7 @@ func (r *MediaLibraryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // move the current state of the cluster closer to the desired state.
 func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := lg.FromContext(ctx)
-	log.Info("Starting reconcile iteration for MediaLibrary", "req", req)
+	log.V(1).Info("Starting reconcile iteration", "resource", req.NamespacedName)
 
 	reconcileHandler := mediaLibraryReconcile{}
 	reconcileHandler.MediaLibraryReconciler = *r
@@ -88,18 +91,13 @@ func (r *MediaLibraryReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	reconcileHandler.object.Namespace = req.Namespace
 
 	err := reconcileHandler.reconcile()
-	if err != nil {
-		log.Error(err, "Failed to reconcile MediaLibrary")
-	} else {
-		log.Info("Successfully reconciled MediaLibrary")
-	}
 	return ctrl.Result{}, err
 }
 
 func (r *mediaLibraryReconcile) reconcile() error {
 	// Load the object desired state based on resource, operator config and default values.
 	if err := r.loadDesiredState(); err != nil {
-		return err
+		return client.IgnoreNotFound(err)
 	}
 
 	// Preconcile step to handle deletion of resources
@@ -107,27 +105,25 @@ func (r *mediaLibraryReconcile) reconcile() error {
 		return err
 	}
 
-	r.log.Info("Running MediaLibrary reconcilers")
-	reconcilers := []func() error{
-		r.reconcileMainPvc,
-	}
-	err := utils.RunConcurrently(reconcilers...)
-	if err != nil {
-		return err
+	r.log.V(1).Info("Running MediaLibrary reconcilers")
+	if err := r.reconcileMainPvc(); err != nil {
+		return fmt.Errorf("unable to reconcile MediaLibrary PVC: %w", err)
 	}
 	return nil
 }
 
 func (r *mediaLibraryReconcile) loadDesiredState() error {
 	if err := r.Get(r.ctx, client.ObjectKeyFromObject(&r.object), &r.object); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			r.log.Error(err, "unable to fetch MediaLibrary")
-			return err
-		}
-		// Resource not found, could have been deleted before the reconcile request.
-		return fmt.Errorf("mediaLibrary resource not found. Ignoring since object must be deleted")
+		return fmt.Errorf("unable to fetch MediaLibrary %s: %w", client.ObjectKeyFromObject(&r.object), err)
 	}
-	r.log.Info("Desired state loaded")
+	r.log.V(1).Info("Desired state loaded")
+	return nil
+}
+
+func (r *mediaLibraryReconcile) updateStatus() error {
+	if err := r.Status().Update(r.ctx, &r.object); err != nil {
+		return fmt.Errorf("unable to update MediaLibrary status: %w", err)
+	}
 	return nil
 }
 
@@ -140,8 +136,7 @@ func (r *mediaLibraryReconcile) preconcile() (bool, error) {
 			return true, errors.New("unable to add finalizer to mediaLibrary")
 		}
 		if err := r.Update(r.ctx, &r.object); err != nil {
-			r.log.Error(err, "failed to update with finalizer")
-			return true, err
+			return true, fmt.Errorf("unable to update MediaLibrary finalizer: %w", err)
 		}
 		return true, nil
 	}
@@ -167,14 +162,15 @@ func (r *mediaLibraryReconcile) preconcile() (bool, error) {
 func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 	// If a pre-existing PVC is specified, skip creation
 	if r.object.Spec.PVC.PVCName != nil {
-		r.log.Info("Using pre-existing PVC", "pvcName", *r.object.Spec.PVC.PVCName)
+		r.log.V(1).Info("Using pre-existing PVC", "pvcName", *r.object.Spec.PVC.PVCName)
 
 		// Check if the PVC exists
 		pvc := &corev1.PersistentVolumeClaim{}
 		err := r.Get(r.ctx, client.ObjectKey{Namespace: r.object.Namespace, Name: *r.object.Spec.PVC.PVCName}, pvc)
-
 		if err != nil {
-			r.log.Error(err, "unable to fetch pre-existing PVC", "pvcName", *r.object.Spec.PVC.PVCName)
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("unable to fetch pre-existing PVC %q: %w", *r.object.Spec.PVC.PVCName, err)
+			}
 
 			cond := metav1.Condition{
 				Type:    typeAvailable,
@@ -183,13 +179,9 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 				Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' was not found",
 			}
 			utils.MergeConditions(&r.object.Status.Conditions, cond)
-			r.object.Status.Initialized = true
-			updateErr := r.Status().Update(r.ctx, &r.object)
-			if updateErr != nil {
-				r.log.Error(updateErr, "unable to update MediaLibrary status")
-				return errors.Join(err, updateErr)
-			}
-			return errors.Join(err, errors.New("unable to fetch pre-existing PVC"))
+			r.object.Status.Initialized = false
+			r.object.Status.EffectivePVC = nil
+			return errors.Join(fmt.Errorf("unable to fetch pre-existing PVC %q: %w", *r.object.Spec.PVC.PVCName, err), r.updateStatus())
 		}
 
 		// Check if pvc has ReadWriteMany access mode
@@ -202,12 +194,9 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 				Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' does not have ReadWriteMany access mode",
 			}
 			utils.MergeConditions(&r.object.Status.Conditions, cond)
-			updateErr := r.Status().Update(r.ctx, &r.object)
-			if updateErr != nil {
-				r.log.Error(updateErr, "unable to update MediaLibrary status")
-				return errors.Join(err, updateErr)
-			}
-			return err
+			r.object.Status.Initialized = false
+			r.object.Status.EffectivePVC = nil
+			return errors.Join(err, r.updateStatus())
 		}
 
 		cond := metav1.Condition{
@@ -218,16 +207,11 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		}
 		utils.MergeConditions(&r.object.Status.Conditions, cond)
 		r.object.Status.EffectivePVC = r.object.Spec.PVC.PVCName
-		updateErr := r.Status().Update(r.ctx, &r.object)
-		if updateErr != nil {
-			r.log.Error(updateErr, "unable to update MediaLibrary status")
-			return updateErr
-		}
-
-		return nil
+		r.object.Status.Initialized = true
+		return r.updateStatus()
 	}
 
-	r.log.Info("Creating or patching PVC", "pvcName", r.object.Name)
+	r.log.V(1).Info("Creating or patching PVC", "pvcName", r.object.Name)
 	pvc := &corev1.PersistentVolumeClaim{}
 	pvc.Name = r.object.Name
 	pvc.Namespace = r.object.Namespace
@@ -235,10 +219,10 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, pvc, func() error {
 		if err := ctrl.SetControllerReference(&r.object, pvc, r.Scheme); err != nil {
-			return errors.Join(err, errors.New("unable to set controller owner reference for PVC"))
+			return fmt.Errorf("unable to set controller owner reference for PVC: %w", err)
 		}
 
-		r.log.Info("Checking storage class", "pvcStorageClass", pvc.Spec.StorageClassName, "libraryStorageClass", r.object.Spec.PVC.StorageClassName)
+		r.log.V(1).Info("Checking storage class", "pvcStorageClass", pvc.Spec.StorageClassName, "libraryStorageClass", r.object.Spec.PVC.StorageClassName)
 		storageClass := cmp.Or(pvc.Spec.StorageClassName, r.object.Spec.PVC.StorageClassName)
 		pvc.SetLabels(mergeMap(pvc.GetLabels(), labels))
 		pvc.Spec = corev1.PersistentVolumeClaimSpec{
@@ -251,11 +235,11 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		return nil
 	})
 	if err != nil {
-		return errors.Join(err, fmt.Errorf("unable to create or patch PVC with status %s", opResult))
+		return fmt.Errorf("unable to create or patch PVC %s: %w", client.ObjectKeyFromObject(pvc), err)
 	}
 
 	if opResult != controllerutil.OperationResultNone {
-		r.log.Info("PVC reconciled with result", "result", opResult)
+		logResourceOperation(r.log, "PersistentVolumeClaim", pvc, opResult)
 		cond := metav1.Condition{
 			Type:    typeAvailable,
 			Status:  metav1.ConditionFalse,
@@ -263,14 +247,9 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 			Message: fmt.Sprintf("The PVC '%s' was successfully created", pvc.Name),
 		}
 		utils.MergeConditions(&r.object.Status.Conditions, cond)
-		r.log.Info("Condition set", "condition", &r.object.Status.Conditions)
+		r.object.Status.Initialized = false
 		r.object.Status.EffectivePVC = &pvc.Name
-		err = r.Status().Update(r.ctx, &r.object)
-		if err != nil {
-			r.log.Error(err, "unable to update MediaLibrary status")
-			return err
-		}
-		return nil
+		return r.updateStatus()
 	}
 
 	if !r.object.Status.Initialized {
@@ -281,12 +260,15 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 }
 
 func initializeJob(r *mediaLibraryReconcile) error {
-	r.log.Info("Initializing media object")
+	r.log.V(1).Info("Initializing media object")
+	if r.object.Status.EffectivePVC == nil || *r.object.Status.EffectivePVC == "" {
+		return errors.New("MediaLibrary has no effective PVC for initialization")
+	}
 
 	// create a kubernetes job to initialize the pvc
 	job := newPvcInitJob(&r.object, r.JobRunnerImage)
 	if err := ctrl.SetControllerReference(&r.object, job, r.Scheme); err != nil {
-		return errors.Join(err, errors.New("unable to set controller owner reference for PVC initialization job"))
+		return fmt.Errorf("unable to set controller owner reference for PVC initialization job: %w", err)
 	}
 
 	// check if an existing job is running
@@ -295,8 +277,6 @@ func initializeJob(r *mediaLibraryReconcile) error {
 		// job exists, check if it's completed
 		for _, c := range job.Status.Conditions {
 			if c.Type == v1.JobComplete && c.Status == corev1.ConditionTrue {
-				r.log.Info("PVC initialization job completed successfully")
-
 				// if the job completed successfully, set initialized to true
 				cond := metav1.Condition{
 					Type:    typeAvailable,
@@ -304,45 +284,54 @@ func initializeJob(r *mediaLibraryReconcile) error {
 					Reason:  "PVCInitialized",
 					Message: "The PVC is initialized",
 				}
+				cond.ObservedGeneration = r.object.Generation
 				utils.MergeConditions(&r.object.Status.Conditions, cond)
 				r.object.Status.Initialized = true
-				err = r.Status().Update(r.ctx, &r.object)
-				if err != nil {
-					r.log.Error(err, "unable to update MediaLibrary status")
+				if err := r.updateStatus(); err != nil {
 					return err
 				}
+				r.log.Info("PVC initialization job completed", "job", client.ObjectKeyFromObject(job))
 				return nil
 			}
 
 			if c.Type == v1.JobFailed && c.Status == corev1.ConditionTrue {
-				r.log.Error(errors.New(c.Message), "PVC initialization job failed")
-
+				jobErr := fmt.Errorf("PVC initialization job %s failed: %s", client.ObjectKeyFromObject(job), c.Message)
 				cond := metav1.Condition{
 					Type:    typeAvailable,
 					Status:  metav1.ConditionFalse,
 					Reason:  "PVCInitializationFailed",
 					Message: "The PVC initialization job failed: " + c.Message,
 				}
+				cond.ObservedGeneration = r.object.Generation
+				previous := meta.FindStatusCondition(r.object.Status.Conditions, typeAvailable)
+				changed := previous == nil || previous.Status != cond.Status || previous.Reason != cond.Reason ||
+					previous.Message != cond.Message || previous.ObservedGeneration != cond.ObservedGeneration
 				utils.MergeConditions(&r.object.Status.Conditions, cond)
-				err = r.Status().Update(r.ctx, &r.object)
-				if err != nil {
-					r.log.Error(err, "unable to update MediaLibrary status")
-					return err
+				r.object.Status.Initialized = false
+				if err := r.updateStatus(); err != nil {
+					return errors.Join(jobErr, err)
+				}
+				if changed {
+					r.log.Error(jobErr, "PVC initialization job failed", "job", client.ObjectKeyFromObject(job), "reason", c.Reason)
 				}
 				return nil
 			}
 		}
 
-		r.log.Info("PVC initialization job is still running")
+		r.log.V(1).Info("PVC initialization job is still running", "job", client.ObjectKeyFromObject(job))
 		return nil
+	}
+
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("unable to fetch PVC initialization job: %w", err)
 	}
 
 	err = r.Create(r.ctx, job)
 	if err != nil {
-		r.log.Error(err, "unable to create PVC initialization job")
-		return errors.Join(err, errors.New("unable to create PVC initialization job"))
+		return fmt.Errorf("unable to create PVC initialization job %s: %w", client.ObjectKeyFromObject(job), err)
 	}
 
+	logResourceOperation(r.log, "Job", job, controllerutil.OperationResultCreated)
 	return nil
 }
 
@@ -389,7 +378,7 @@ func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "object",
-									MountPath: "/object",
+									MountPath: medialibrary.DefaultLibraryRootPath,
 								},
 							},
 							ImagePullPolicy: corev1.PullIfNotPresent,

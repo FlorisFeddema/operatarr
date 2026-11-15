@@ -20,18 +20,22 @@ import (
 	"context"
 	"time"
 
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
+	"github.com/FlorisFeddema/operatarr/jobrunner/medialibrary"
 )
 
 const defaultNamespace = "default"
@@ -89,6 +93,99 @@ var _ = Describe("MediaLibrary Controller", func() {
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
+	})
+})
+
+var _ = Describe("MediaLibrary initialization Job spec", func() {
+	It("mounts the MediaLibrary PVC at the jobrunner library root", func() {
+		effectivePVC := "library-pvc"
+		ml := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: "library", Namespace: defaultNamespace},
+			Status:     feddemadevv1alpha1.MediaLibraryStatus{EffectivePVC: &effectivePVC},
+		}
+
+		podSpec := newPvcInitJob(ml, "test:latest").Spec.Template.Spec
+		Expect(podSpec.Volumes).To(HaveLen(1))
+		Expect(podSpec.Volumes[0].PersistentVolumeClaim).NotTo(BeNil())
+		Expect(podSpec.Volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(effectivePVC))
+		Expect(podSpec.Containers).To(HaveLen(1))
+		Expect(podSpec.Containers[0].VolumeMounts).To(ConsistOf(corev1.VolumeMount{
+			Name:      podSpec.Volumes[0].Name,
+			MountPath: medialibrary.DefaultLibraryRootPath,
+		}))
+		Expect(medialibrary.DefaultLibraryRootPath).To(Equal("/library"))
+	})
+})
+
+var _ = Describe("MediaLibrary initialization Job status", func() {
+	testJobCondition := func(name string, jobCondition batchv1.JobCondition, initialized bool, conditionStatus metav1.ConditionStatus, reason string) {
+		ctx := context.Background()
+		ml := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
+			Spec: feddemadevv1alpha1.MediaLibrarySpec{
+				PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, ml)).To(Succeed()) })
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ml), ml)).To(Succeed())
+		effectivePVC := ml.Name
+		ml.Status.EffectivePVC = &effectivePVC
+		Expect(k8sClient.Status().Update(ctx, ml)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ml), ml)).To(Succeed())
+
+		job := newPvcInitJob(ml, "test:latest")
+		Expect(k8sClient.Create(ctx, job)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, job)).To(Succeed()) })
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(job), job)).To(Succeed())
+		now := metav1.Now()
+		job.Status.StartTime = &now
+		if jobCondition.Type == batchv1.JobComplete {
+			job.Status.CompletionTime = &now
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobConditionType("SuccessCriteriaMet"), Status: corev1.ConditionTrue},
+				jobCondition,
+			}
+		} else {
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobConditionType("FailureTarget"), Status: corev1.ConditionTrue},
+				jobCondition,
+			}
+		}
+		Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+		reconciler := &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		state := &mediaLibraryReconcile{
+			MediaLibraryReconciler: *reconciler,
+			ctx:                    ctx,
+			log:                    logr.Discard(),
+			object:                 *ml,
+		}
+		Expect(initializeJob(state)).To(Succeed())
+
+		updated := &feddemadevv1alpha1.MediaLibrary{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ml), updated)).To(Succeed())
+		Expect(updated.Status.Initialized).To(Equal(initialized))
+		condition := getAvailableCondition(updated.Status.Conditions)
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Status).To(Equal(conditionStatus))
+		Expect(condition.Reason).To(Equal(reason))
+	}
+
+	It("marks the library initialized when the initialization Job succeeds", func() {
+		testJobCondition("ml-job-success", batchv1.JobCondition{
+			Type:   batchv1.JobComplete,
+			Status: corev1.ConditionTrue,
+		}, true, metav1.ConditionTrue, "PVCInitialized")
+	})
+
+	It("keeps the library uninitialized when the initialization Job fails", func() {
+		testJobCondition("ml-job-failure", batchv1.JobCondition{
+			Type:    batchv1.JobFailed,
+			Status:  corev1.ConditionTrue,
+			Message: "initialization failed",
+		}, false, metav1.ConditionFalse, "PVCInitializationFailed")
 	})
 })
 
@@ -155,6 +252,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCFound"))
+			g.Expect(updated.Status.Initialized).To(BeTrue())
 			g.Expect(updated.Status.EffectivePVC).NotTo(BeNil())
 			g.Expect(*updated.Status.EffectivePVC).To(Equal(pvcName))
 		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
@@ -200,6 +298,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCInvalidAccessMode"))
+			g.Expect(updated.Status.Initialized).To(BeFalse())
 			g.Expect(updated.Status.EffectivePVC).To(BeNil())
 		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 	})
@@ -226,6 +325,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCNotFound"))
+			g.Expect(updated.Status.Initialized).To(BeFalse())
 			g.Expect(updated.Status.EffectivePVC).To(BeNil())
 		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 	})

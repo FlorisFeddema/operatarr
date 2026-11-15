@@ -22,6 +22,7 @@ import (
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -29,6 +30,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+)
+
+const (
+	testSonarrImage = "sonarr:test"
+	testGatewayName = "test-gateway"
 )
 
 var _ = Describe("Sonarr HTTP route validation", func() {
@@ -42,7 +48,7 @@ var _ = Describe("Sonarr HTTP route validation", func() {
 				},
 				Spec: feddemadevv1alpha1.SonarrSpec{
 					PodSpec: feddemadevv1alpha1.SonarrPodTemplateSpec{
-						Image: "sonarr:test",
+						Image: testSonarrImage,
 						ConfigVolumeSpec: &feddemadevv1alpha1.ConfigVolumeSpec{
 							Size: resource.MustParse("1Gi"),
 						},
@@ -50,10 +56,10 @@ var _ = Describe("Sonarr HTTP route validation", func() {
 					HttpRouteSpec: feddemadevv1alpha1.SonarrHttpRouteSpec{
 						Enabled:   enabled,
 						Hostname:  hostname,
-						ParentRef: gatewayv1.ParentReference{Name: "test-gateway"},
+						ParentRef: gatewayv1.ParentReference{Name: testGatewayName},
 					},
 					MediaLibraryRef: corev1.ObjectReference{
-						Kind: "MediaLibrary",
+						Kind: mediaLibraryKind,
 						Name: "test-library",
 					},
 				},
@@ -91,17 +97,17 @@ var _ = Describe("Sonarr MediaLibrary watch mapping", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
 				Spec: feddemadevv1alpha1.SonarrSpec{
 					PodSpec: feddemadevv1alpha1.SonarrPodTemplateSpec{
-						Image: "sonarr:test",
+						Image: testSonarrImage,
 						ConfigVolumeSpec: &feddemadevv1alpha1.ConfigVolumeSpec{
 							Size: resource.MustParse("1Gi"),
 						},
 					},
 					HttpRouteSpec: feddemadevv1alpha1.SonarrHttpRouteSpec{
 						Enabled:   false,
-						ParentRef: gatewayv1.ParentReference{Name: "test-gateway"},
+						ParentRef: gatewayv1.ParentReference{Name: testGatewayName},
 					},
 					MediaLibraryRef: corev1.ObjectReference{
-						Kind:      "MediaLibrary",
+						Kind:      mediaLibraryKind,
 						Name:      libraryName,
 						Namespace: defaultNamespace,
 					},
@@ -122,5 +128,111 @@ var _ = Describe("Sonarr MediaLibrary watch mapping", func() {
 		Expect(requests).To(ConsistOf(reconcile.Request{
 			NamespacedName: client.ObjectKeyFromObject(referencedSonarr),
 		}))
+	})
+})
+
+var _ = Describe("Sonarr dependency reconciliation", func() {
+	ctx := context.Background()
+
+	newSonarr := func(name, mediaLibraryName string, routeEnabled bool) *feddemadevv1alpha1.Sonarr {
+		return &feddemadevv1alpha1.Sonarr{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
+			Spec: feddemadevv1alpha1.SonarrSpec{
+				PodSpec: feddemadevv1alpha1.SonarrPodTemplateSpec{
+					Image: testSonarrImage,
+					ConfigVolumeSpec: &feddemadevv1alpha1.ConfigVolumeSpec{
+						Size: resource.MustParse("1Gi"),
+					},
+				},
+				HttpRouteSpec: feddemadevv1alpha1.SonarrHttpRouteSpec{
+					Enabled:   routeEnabled,
+					Hostname:  "sonarr.example.com",
+					ParentRef: gatewayv1.ParentReference{Name: testGatewayName},
+				},
+				MediaLibraryRef: corev1.ObjectReference{
+					Kind: mediaLibraryKind,
+					Name: mediaLibraryName,
+				},
+			},
+		}
+	}
+
+	It("records an unavailable condition and retries when the MediaLibrary is missing", func() {
+		sonarr := newSonarr("sonarr-missing-library", "missing-library", false)
+		Expect(k8sClient.Create(ctx, sonarr)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, sonarr)).To(Succeed()) })
+
+		reconciler := &SonarrReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		request := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)}
+		_, err := reconciler.Reconcile(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, request)
+		Expect(err).To(MatchError(ContainSubstring("unable to get MediaLibrary from reference")))
+
+		updated := &feddemadevv1alpha1.Sonarr{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), updated)).To(Succeed())
+		condition := getAvailableCondition(updated.Status.Conditions)
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+		Expect(condition.Reason).To(Equal("MediaLibraryUnavailable"))
+		Expect(condition.Message).To(ContainSubstring("not found"))
+	})
+
+	It("continues reconciling Sonarr resources when Gateway API is unavailable", func() {
+		const libraryName = "sonarr-gateway-library"
+		pvcName := "sonarr-gateway-pvc"
+		library := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: libraryName, Namespace: defaultNamespace},
+			Spec: feddemadevv1alpha1.MediaLibrarySpec{
+				CrossNamespaceAccess: true,
+				PVC:                  feddemadevv1alpha1.MediaLibraryPVC{PVCName: &pvcName},
+			},
+			Status: feddemadevv1alpha1.MediaLibraryStatus{
+				EffectivePVC: &pvcName,
+				Initialized:  true,
+			},
+		}
+		Expect(k8sClient.Create(ctx, library)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(library), library)).To(Succeed())
+		library.Status = feddemadevv1alpha1.MediaLibraryStatus{
+			EffectivePVC: &pvcName,
+			Initialized:  true,
+		}
+		Expect(k8sClient.Status().Update(ctx, library)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(library), library)).To(Succeed())
+		Expect(library.Status.Initialized).To(BeTrue())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, library)).To(Succeed()) })
+
+		sonarr := newSonarr("sonarr-without-gateway-api", libraryName, true)
+		Expect(k8sClient.Create(ctx, sonarr)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, sonarr)).To(Succeed()) })
+
+		reconciler := &SonarrReconciler{
+			Client:              k8sClient,
+			Scheme:              k8sClient.Scheme(),
+			GatewayAPIAvailable: false,
+		}
+		request := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)}
+		_, err := reconciler.Reconcile(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+
+		service := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), service)).To(Succeed())
+		statefulSet := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), statefulSet)).To(Succeed())
+
+		updated := &feddemadevv1alpha1.Sonarr{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), updated)).To(Succeed())
+		condition := getAvailableCondition(updated.Status.Conditions)
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		resourceVersion := updated.ResourceVersion
+
+		_, err = reconciler.Reconcile(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), updated)).To(Succeed())
+		Expect(updated.ResourceVersion).To(Equal(resourceVersion))
 	})
 })
