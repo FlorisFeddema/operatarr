@@ -63,6 +63,7 @@ type mediaLibraryReconcile struct {
 // +kubebuilder:rbac:groups=feddema.dev,resources=medialibraries/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=feddema.dev,resources=medialibraries/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;patch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MediaLibraryReconciler) SetupWithManager(mgr ctrl.Manager) error {

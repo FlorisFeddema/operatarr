@@ -1,9 +1,19 @@
 {
   "features": {
+    "ghcr.io/devcontainer-community/devcontainer-features/ripgrep:1.0.3@sha256:5fed7bcc70a222974726a47146f257b58cc96240513ed424793457e39bd7448a": {
+      "version": "1.0.3",
+      "resolved": "ghcr.io/devcontainer-community/devcontainer-features/ripgrep@sha256:5fed7bcc70a222974726a47146f257b58cc96240513ed424793457e39bd7448a",
+      "integrity": "sha256:5fed7bcc70a222974726a47146f257b58cc96240513ed424793457e39bd7448a"
+    },
     "ghcr.io/devcontainers/features/go:1": {
       "version": "1.4.1",
       "resolved": "ghcr.io/devcontainers/features/go@sha256:2f2ed290df9a5f1841340b14cb8a287cf0574a816967dd84dcfe42fdd97b897e",
       "integrity": "sha256:2f2ed290df9a5f1841340b14cb8a287cf0574a816967dd84dcfe42fdd97b897e"
+    },
+    "ghcr.io/jsburckhardt/devcontainer-features/rtk:1.0.0": {
+      "version": "1.0.0",
+      "resolved": "ghcr.io/jsburckhardt/devcontainer-features/rtk@sha256:f393df8514c943c260e22e0e89fc224e3ba0ca6eeccbd6c562741cf8d7acfde4",
+      "integrity": "sha256:f393df8514c943c260e22e0e89fc224e3ba0ca6eeccbd6c562741cf8d7acfde4"
     }
   }
 }

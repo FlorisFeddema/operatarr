@@ -24,8 +24,5 @@ resources:
 # if you do not want those helpers be installed with your Project.
 - medialibrary_editor_role.yaml
 - medialibrary_viewer_role.yaml
-- library_editor_role.yaml
-- library_viewer_role.yaml
 - sonarr_editor_role.yaml
 - sonarr_viewer_role.yaml
-

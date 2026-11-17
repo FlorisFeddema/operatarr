@@ -5,11 +5,11 @@
     "context": ".."
   },
   "features": {
-    "ghcr.io/devcontainers/features/go:1@sha256:2f2ed290df9a5f1841340b14cb8a287cf0574a816967dd84dcfe42fdd97b897e": {
+    "ghcr.io/devcontainers/features/go:1": {
       "version": "1.27",
       "installGoTools": true
     },
-    "ghcr.io/jsburckhardt/devcontainer-features/rtk:1.0.0@sha256:f393df8514c943c260e22e0e89fc224e3ba0ca6eeccbd6c562741cf8d7acfde4": {
+    "ghcr.io/jsburckhardt/devcontainer-features/rtk:1.0.0": {
       "version": "v0.45.0"
     },
     "ghcr.io/devcontainer-community/devcontainer-features/ripgrep:1.0.3@sha256:5fed7bcc70a222974726a47146f257b58cc96240513ed424793457e39bd7448a": {
@@ -17,7 +17,25 @@
     }
   },
   "remoteUser": "vscode",
+  "postCreateCommand": "make devcontainer-setup",
+  // Grants vscode access to the mounted Podman socket. --userns=keep-id is not
+  // used because the Docker CLI rejects it, even when backed by Podman.
+  "postStartCommand": "sh .devcontainer/post-start.sh",
+  "runArgs": [
+    // SELinux in the Podman machine otherwise blocks access to the socket.
+    "--security-opt=label=disable",
+    // Lets the container reach kind's API server on the VM's loopback address.
+    "--network=host"
+  ],
+  "mounts": [
+    // Path inside the Podman machine VM; replace 501 with the UID printed by
+    // `podman machine ssh id -u`.
+    "source=/run/user/501/podman/podman.sock,target=/tmp/host-podman.sock,type=bind"
+  ],
   "containerEnv": {
-    "LOCALBIN": "/home/vscode/.cache/operatarr/bin"
+    "LOCALBIN": "/home/vscode/.cache/operatarr/bin",
+    "CONTAINER_HOST": "unix:///tmp/host-podman.sock",
+    "KIND_EXPERIMENTAL_PROVIDER": "podman",
+    "KUBECONFIG": "/home/vscode/.kube/operatarr-e2e"
   }
 }

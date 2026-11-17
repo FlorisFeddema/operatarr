@@ -130,6 +130,10 @@ Sonarr and MediaLibrary resources; do not assume the other apps already exist.
 - E2E requires a configured cluster and working container engine; follow the
   [README](README.md) and obtain approval before running it. Do not substitute a
   live cluster for missing envtest assets.
+- When a change affects cluster-level behavior such as resources, RBAC, watches,
+  storage, or lifecycle, consider whether an e2e flow should be added or updated
+  and suggest one when useful. Do not run cluster-mutating e2e tests without
+  explicit approval.
 - Documentation-only, non-feature changes do not require Go tests. Report what
   was validated and any blocked checks accurately; never claim an unrun check
   passed.

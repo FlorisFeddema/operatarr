@@ -34,6 +34,15 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= podman
 
+# E2E image settings use a single local platform so images can be loaded by kind.
+KIND_CLUSTER ?= operatarr-e2e
+E2E_PLATFORM ?= linux/$(shell go env GOARCH)
+E2E_IMAGE_DIR ?= $(LOCALBIN)/e2e-images
+
+ifeq ($(CONTAINER_TOOL),podman)
+E2E_IMAGE_SAVE_FLAGS ?= --format docker-archive
+endif
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
@@ -83,10 +92,32 @@ test: manifests generate fmt vet envtest ## Run tests.
 	export KUBEBUILDER_ASSETS; \
 	go test $$(go list ./... | grep -v /e2e) $(TEST_ARGS)
 
-# Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
-.PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
+# The e2e suite requires an existing kind cluster named by KIND_CLUSTER.
+.PHONY: test-e2e
 test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v
+	KIND_CLUSTER="$(KIND_CLUSTER)" go test ./test/e2e/ -v -ginkgo.v
+
+.PHONY: kind-create
+kind-create:
+	kind create cluster --name "$(KIND_CLUSTER)" --config hack/kind-config.yaml --wait 5m
+
+.PHONY: kind-delete
+kind-delete:
+	kind delete cluster --name "$(KIND_CLUSTER)"
+
+.PHONY: docker-build-e2e
+docker-build-e2e:
+	$(CONTAINER_TOOL) build --platform "$(E2E_PLATFORM)" -t "example.com/operatarr:e2e" .
+
+.PHONY: docker-build-jobrunner-e2e
+docker-build-jobrunner-e2e:
+	$(CONTAINER_TOOL) build --platform "$(E2E_PLATFORM)" -f jobrunner.Dockerfile -t "example.com/operatarr-jobrunner:e2e" .
+
+.PHONY: e2e-images
+e2e-images: docker-build-e2e docker-build-jobrunner-e2e
+	mkdir -p "$(E2E_IMAGE_DIR)"
+	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/manager.tar" "example.com/operatarr:e2e"
+	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/jobrunner.tar" "example.com/operatarr-jobrunner:e2e"
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -193,6 +224,11 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+.PHONY: devcontainer-setup
+devcontainer-setup: controller-gen envtest golangci-lint ## Prepare tools and dependencies for devcontainer validation.
+	go mod download
+	$(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.

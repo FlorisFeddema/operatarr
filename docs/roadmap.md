@@ -141,4 +141,5 @@ or generated CRD schema. Regenerate manifests only after approval.
 - For Go changes, run focused tests, then `make vet` and `go build ./...`.
   Controller or API changes also require the controller test suite.
 - Run e2e tests only against an explicitly approved test cluster. The ordinary
-  test target must not depend on a live cluster.
+  test target must not depend on a live cluster. Planned e2e fixes and flows
+  are in the [e2e test plan](e2e-plan.md).

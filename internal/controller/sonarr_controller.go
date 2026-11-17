@@ -67,6 +67,10 @@ type sonarrReconcile struct {
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {

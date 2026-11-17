@@ -8,7 +8,7 @@ ARG KIND_VERSION=v0.33.0
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        ca-certificates curl fuse-overlayfs make podman slirp4netns uidmap \
+        acl ca-certificates curl file fuse-overlayfs gettext-base make podman slirp4netns tar uidmap \
     && apt-get clean \
     && find /var/lib/apt/lists -maxdepth 1 -type f -delete
 
