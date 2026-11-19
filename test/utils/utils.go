@@ -17,6 +17,8 @@ limitations under the License.
 package utils
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +26,7 @@ import (
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck
+	corev1 "k8s.io/api/core/v1"
 )
 
 // Run executes the provided command within this context
@@ -45,13 +48,60 @@ func Run(cmd *exec.Cmd) ([]byte, error) {
 	return output, nil
 }
 
-// LoadImageArchiveToKindCluster loads a saved image archive into the selected kind cluster.
-func LoadImageArchiveToKindCluster(archive string) error {
+// KindClusterName returns the selected kind cluster name.
+func KindClusterName() string {
 	cluster := os.Getenv("KIND_CLUSTER")
 	if cluster == "" {
-		cluster = "operatarr-e2e"
+		return "operatarr-e2e"
 	}
-	kindOptions := []string{"load", "image-archive", archive, "--name", cluster}
+	return cluster
+}
+
+// KindKubectl targets the selected kind context explicitly.
+func KindKubectl(args ...string) *exec.Cmd {
+	context := "kind-" + KindClusterName()
+	return exec.Command("kubectl", append([]string{"--context", context}, args...)...)
+}
+
+// KindNodePlatform returns the common Linux platform of the kind cluster's nodes.
+func KindNodePlatform() (string, error) {
+	output, err := Run(KindKubectl("get", "nodes", "-o", "json"))
+	if err != nil {
+		return "", fmt.Errorf("unable to inspect kind nodes: %w", err)
+	}
+	return platformForNodes(output)
+}
+
+func platformForNodes(output []byte) (string, error) {
+	var nodes corev1.NodeList
+	if err := json.Unmarshal(output, &nodes); err != nil {
+		return "", fmt.Errorf("unable to decode kind nodes: %w", err)
+	}
+	if len(nodes.Items) == 0 {
+		return "", errors.New("kind cluster has no nodes")
+	}
+
+	var platform string
+	for _, node := range nodes.Items {
+		info := node.Status.NodeInfo
+		if info.OperatingSystem != "linux" {
+			return "", fmt.Errorf("kind node %q has unsupported operating system %q", node.Name, info.OperatingSystem)
+		}
+		if info.Architecture == "" || strings.Trim(info.Architecture, "abcdefghijklmnopqrstuvwxyz0123456789") != "" {
+			return "", fmt.Errorf("kind node %q has invalid architecture %q", node.Name, info.Architecture)
+		}
+		nodePlatform := "linux/" + info.Architecture
+		if platform != "" && platform != nodePlatform {
+			return "", fmt.Errorf("kind nodes have different platforms: %s and %s", platform, nodePlatform)
+		}
+		platform = nodePlatform
+	}
+	return platform, nil
+}
+
+// LoadImageArchiveToKindCluster loads a saved image archive into the selected kind cluster.
+func LoadImageArchiveToKindCluster(archive string) error {
+	kindOptions := []string{"load", "image-archive", archive, "--name", KindClusterName()}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)
 	return err

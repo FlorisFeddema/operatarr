@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: E2E_RUN_NAME
+  namespace: E2E_RUN_NAME
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: E2E_RUN_NAME
+  namespace: E2E_RUN_NAME
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: E2E_RUN_NAME
+  namespace: E2E_RUN_NAME
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: E2E_RUN_NAME
+subjects:
+- kind: ServiceAccount
+  name: E2E_RUN_NAME
+  namespace: E2E_RUN_NAME
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: E2E_RUN_NAME
+  labels:
+    e2e.feddema.dev/run: E2E_RUN_NAME
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "persistentvolumeclaims", "configmaps", "pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["persistentvolumes"]
+  verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: E2E_RUN_NAME
+  labels:
+    e2e.feddema.dev/run: E2E_RUN_NAME
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: E2E_RUN_NAME
+subjects:
+- kind: ServiceAccount
+  name: E2E_RUN_NAME
+  namespace: E2E_RUN_NAME
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-path-config
+  namespace: E2E_RUN_NAME
+data:
+  config.json: |-
+    {"nodePathMap":[],"sharedFileSystemPath":"/tmp/E2E_RUN_NAME"}
+  setup: |-
+    #!/bin/sh
+    set -eu
+    mkdir -m 0777 -p "$VOL_DIR"
+  teardown: |-
+    #!/bin/sh
+    set -eu
+    rm -d "$VOL_DIR"
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: helper-pod
+    spec:
+      containers:
+      - name: helper-pod
+        image: E2E_HELPER_IMAGE
+        imagePullPolicy: IfNotPresent
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: E2E_RUN_NAME
+  labels:
+    e2e.feddema.dev/run: E2E_RUN_NAME
+provisioner: e2e.feddema.dev/E2E_RUN_NAME
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: E2E_RUN_NAME
+  namespace: E2E_RUN_NAME
+  labels:
+    e2e.feddema.dev/run: E2E_RUN_NAME
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      e2e.feddema.dev/run: E2E_RUN_NAME
+  template:
+    metadata:
+      labels:
+        e2e.feddema.dev/run: E2E_RUN_NAME
+    spec:
+      serviceAccountName: E2E_RUN_NAME
+      containers:
+      - name: provisioner
+        image: E2E_PROVISIONER_IMAGE
+        imagePullPolicy: IfNotPresent
+        command:
+        - local-path-provisioner
+        - start
+        - --config
+        - /etc/config/config.json
+        - --provisioner-name
+        - e2e.feddema.dev/E2E_RUN_NAME
+        - --service-account-name
+        - E2E_RUN_NAME
+        - --helper-image
+        - E2E_HELPER_IMAGE
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CONFIG_MOUNT_PATH
+          value: /etc/config/
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config/
+      volumes:
+      - name: config
+        configMap:
+          name: local-path-config

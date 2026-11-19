@@ -12,8 +12,10 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -213,6 +215,139 @@ func TestReconcilePrimaryErrors(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestMediaLibraryFinalizerUpdateFailure(t *testing.T) {
+	scheme := errorTestScheme(t)
+	deletedAt := metav1.Now()
+	library := &feddemadevv1alpha1.MediaLibrary{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testLibraryName, Namespace: defaultNamespace,
+			Finalizers: []string{finalizerName}, DeletionTimestamp: &deletedAt,
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(library).Build()
+	updateErr := errors.New("finalizer update rejected")
+	failingClient := interceptor.NewClient(base, interceptor.Funcs{
+		Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+			return updateErr
+		},
+	})
+	reconciler := &MediaLibraryReconciler{Client: failingClient, Scheme: scheme}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(library)}
+
+	_, err := reconciler.Reconcile(context.Background(), req)
+	if !errors.Is(err, updateErr) || !strings.Contains(err.Error(), "MediaLibrary finalizer") {
+		t.Fatalf("expected contextual finalizer update error, got %v", err)
+	}
+	current := &feddemadevv1alpha1.MediaLibrary{}
+	if err := base.Get(context.Background(), req.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(current, finalizerName) {
+		t.Fatal("failed update must leave the persisted finalizer intact")
+	}
+
+	reconciler.Client = base
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("expected finalization to succeed on retry: %v", err)
+	}
+	if err := base.Get(context.Background(), req.NamespacedName, current); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected the finalized MediaLibrary to be deleted, got %v", err)
+	}
+}
+
+func TestManagedPVCInitializationAndIdempotency(t *testing.T) {
+	scheme := errorTestScheme(t)
+	library := &feddemadevv1alpha1.MediaLibrary{
+		ObjectMeta: metav1.ObjectMeta{Name: testLibraryName, Namespace: defaultNamespace, Finalizers: []string{finalizerName}},
+		Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")}},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(library).WithStatusSubresource(library).Build()
+	reconciler := &MediaLibraryReconciler{Client: c, Scheme: scheme, JobRunnerImage: testJobRunnerImage}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(library)}
+	ctx := context.Background()
+
+	if _, err := reconciler.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	jobKey := client.ObjectKey{Name: testLibraryName + "-pvc-init", Namespace: defaultNamespace}
+	if err := c.Get(ctx, jobKey, job); err != nil {
+		t.Fatalf("expected the initialization Job after PVC creation: %v", err)
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(ctx, req.NamespacedName, pvc); err != nil {
+		t.Fatal(err)
+	}
+	volumeMode := corev1.PersistentVolumeFilesystem
+	pvc.Spec.VolumeName = "bound-volume"
+	pvc.Spec.VolumeMode = &volumeMode
+	if err := c.Update(ctx, pvc); err != nil {
+		t.Fatal(err)
+	}
+	pvcVersion, jobVersion := pvc.ResourceVersion, job.ResourceVersion
+
+	if _, err := reconciler.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, req.NamespacedName, pvc); err != nil {
+		t.Fatal(err)
+	}
+	if pvc.Spec.VolumeName != "bound-volume" || pvc.Spec.VolumeMode == nil || *pvc.Spec.VolumeMode != volumeMode {
+		t.Fatalf("reconciliation removed API-assigned PVC fields: %#v", pvc.Spec)
+	}
+	if err := c.Get(ctx, jobKey, job); err != nil {
+		t.Fatal(err)
+	}
+	if pvc.ResourceVersion != pvcVersion || job.ResourceVersion != jobVersion {
+		t.Fatalf("unchanged PVC and Job should not be updated: PVC %s -> %s, Job %s -> %s",
+			pvcVersion, pvc.ResourceVersion, jobVersion, job.ResourceVersion)
+	}
+}
+
+func TestManagedPVCStatusFailureCanRetry(t *testing.T) {
+	scheme := errorTestScheme(t)
+	library := &feddemadevv1alpha1.MediaLibrary{
+		ObjectMeta: metav1.ObjectMeta{Name: testLibraryName, Namespace: defaultNamespace, Finalizers: []string{finalizerName}},
+		Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")}},
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(library).WithStatusSubresource(library).Build()
+	statusErr := apierrors.NewConflict(schema.GroupResource{Group: "feddema.dev", Resource: "medialibraries"}, testLibraryName,
+		errors.New("status update rejected"))
+	failingClient := interceptor.NewClient(base, interceptor.Funcs{
+		SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return statusErr
+		},
+	})
+	reconciler := &MediaLibraryReconciler{Client: failingClient, Scheme: scheme, JobRunnerImage: testJobRunnerImage}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(library)}
+	ctx := context.Background()
+
+	_, err := reconciler.Reconcile(ctx, req)
+	if !errors.Is(err, statusErr) || !apierrors.IsConflict(err) {
+		t.Fatalf("expected the status update failure, got %v", err)
+	}
+	jobKey := client.ObjectKey{Name: testLibraryName + "-pvc-init", Namespace: defaultNamespace}
+	if err := base.Get(ctx, jobKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("must not create a Job before the PVC status is persisted, got %v", err)
+	}
+
+	reconciler.Client = base
+	if _, err := reconciler.Reconcile(ctx, req); err != nil {
+		t.Fatalf("expected reconciliation to recover after the status failure: %v", err)
+	}
+	current := &feddemadevv1alpha1.MediaLibrary{}
+	if err := base.Get(ctx, req.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.EffectivePVC == nil || *current.Status.EffectivePVC != testLibraryName {
+		t.Fatalf("expected effective PVC to be persisted on retry, got %#v", current.Status.EffectivePVC)
+	}
+	if err := base.Get(ctx, jobKey, &batchv1.Job{}); err != nil {
+		t.Fatalf("expected initialization Job on retry: %v", err)
 	}
 }
 

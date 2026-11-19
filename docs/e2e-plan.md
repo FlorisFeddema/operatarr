@@ -2,15 +2,15 @@
 
 This document records the work to make the cluster end-to-end (e2e) suite in
 [test/e2e](../test/e2e/) reliable and the flows to add afterwards. The harness
-and Operator flows B1–B4 are implemented, but the live suite has not been run
-in this environment. Items marked **approval** fall under the approval
-boundaries in [AGENTS.md](../AGENTS.md) and need explicit sign-off before
-implementation.
+and Operator flows B1–B4 passed on a local Linux/arm64 kind cluster. Items
+marked **approval** fall under the approval boundaries in
+[AGENTS.md](../AGENTS.md) and need explicit sign-off before implementation.
 
 ## Current state
 
-The suite in [e2e_test.go](../test/e2e/e2e_test.go) now has four ordered
-Operator flows:
+The suite in [e2e_test.go](../test/e2e/e2e_test.go) has four ordered
+Operator flows and the MediaLibrary flows in
+[medialibrary_test.go](../test/e2e/medialibrary_test.go):
 
 1. Setup verifies the current context is `kind-$(KIND_CLUSTER)`, builds and
    loads single-platform manager and jobrunner images, and applies the
@@ -24,20 +24,23 @@ Operator flows:
 6. On test failure, the suite prints manager pods, descriptions, logs, and
    namespace events. Teardown removes the test-only metrics grant and overlay.
 
-No custom resources are created, and application reconciliation is not yet
-checked. `make test` and CI exclude this suite. The live suite has not been run
-in this environment.
+MediaLibrary flows B5–B9, B11, and B13 are implemented. `make test` and CI
+exclude this suite. B1–B7 passed on Kubernetes v1.37.0 in the local Linux/arm64
+kind cluster. The first B8 run exposed a managed-PVC reconciliation bug;
+after the fix, its PVC bound and its Job scheduled, but the rootless node
+rejected the NFS mount. The suite cleaned up its resources and left the
+cluster running. A single-node local-path RWX backend is now being validated.
 
 ## Part A: make the existing suite work
 
-### Blockers
+### Original blockers
 
 | # | Blocker | Evidence | Gate |
 |---|---------|----------|------|
 | A1 | The manager ClusterRole lacks permissions for core `persistentvolumeclaims`, `persistentvolumes`, and `services`, for `apps/statefulsets`, and for `gateway.networking.k8s.io/httproutes`. The controllers `Owns()` these types, so their informers cannot sync and the manager is expected to exit after the cache-sync timeout. The smoke test can still pass because it only checks `phase=Running` within one minute. Envtest-based tests run with admin credentials and do not catch this. | [role.yaml](../config/rbac/role.yaml), [Sonarr watches](../internal/controller/sonarr_controller.go#L76), [MediaLibrary watches](../internal/controller/medialibrary_controller.go#L72) | **approved** (minimal required RBAC) |
 | A2 | `make docker-build` runs `$(CONTAINER_TOOL) buildx build --manifest` for `linux/arm64,linux/amd64`. This produces a Podman manifest list; `kind load docker-image` expects a single image in the local Docker store. | [Makefile](../Makefile#L112) | — |
 | A3 | The jobrunner image is never built or loaded. The manager defaults to `harbor.feddema.dev/operatarr/job-runner:dev` with `IfNotPresent`, so initialization Jobs cannot start in kind. | [main.go](../cmd/main.go#L59), [init Job](../internal/controller/medialibrary_controller.go#L338) | — |
-| A4 | The initialization Job hardcodes `nodeSelector: kubernetes.io/arch=arm64`, so it never schedules on amd64 nodes (including GitHub-hosted runners). | [medialibrary_controller.go](../internal/controller/medialibrary_controller.go#L396) | **approved** to remove selector and target the kind node architecture |
+| A4 | The initialization Job hardcoded `nodeSelector: kubernetes.io/arch=arm64`, so it could not schedule on amd64 nodes. The selector has been removed and e2e images target the kind nodes' architecture. Image building, loading, and Job scheduling passed on arm64. | [init Job](../internal/controller/medialibrary_controller.go), [image preparation](../test/e2e/e2e_test.go) | **approved** and implemented |
 | A5 | Prometheus Operator and cert-manager are installed even though neither is enabled in the default overlay. `kubectl create` for Prometheus fails when rerun, and `AfterAll` removes add-ons that may have been preinstalled. | [e2e_test.go](../test/e2e/e2e_test.go#L33), [default overlay](../config/default/kustomization.yaml#L23) | — |
 | A6 | There is no guard on the target cluster: the suite uses whatever kubeconfig context is current and deletes `operatarr-system`. | [e2e_test.go](../test/e2e/e2e_test.go#L45) | — |
 | A7 | `make deploy` runs `kustomize edit set image`, rewriting the tracked [manager kustomization](../config/manager/kustomization.yaml), and also regenerates manifests. | [Makefile](../Makefile#L150) | — |
@@ -68,8 +71,9 @@ in this environment.
    controllers own or create, run `make manifests`, and review the generated
    diff. Verify with
    `kubectl auth can-i --as=system:serviceaccount:operatarr-system:operatarr-controller-manager`.
-7. **Init Job architecture (approved).** Remove the arm64 `nodeSelector` and
-   build/load the jobrunner image for the kind node architecture.
+7. **Init Job architecture (implemented).** Remove the arm64 `nodeSelector` and
+   build/load the jobrunner image for the kind node architecture. Image
+   building, loading, and Job scheduling passed on arm64.
 8. **Stronger smoke test.** Wait for the Deployment to be `Available` and the
    pod `Ready`. Then check that `restartCount` stays 0 for longer than the
    cache-sync timeout and that the logs contain no `Forbidden` or
@@ -113,9 +117,12 @@ product fixes.
 ### MediaLibrary
 
 Kind's default `standard` (local-path) StorageClass supports only
-ReadWriteOnce, while managed MediaLibrary PVCs request ReadWriteMany. The
-selected test setup is an NFS provisioner, which supports dynamic ReadWriteMany
-claims. The existing
+ReadWriteOnce, while managed MediaLibrary PVCs request ReadWriteMany. NFS
+provisioning worked, but NFS mounts failed with `Operation not permitted` on
+the rootless kind node. The approved test setup uses a separate local-path
+provisioner configured with a shared filesystem path, isolated StorageClass
+and RBAC. It supports concurrent access from pods on the single kind node,
+but does not test multi-node storage or enforce capacity limits. The existing
 [test/manifests/medialibrary.yaml](../test/manifests/medialibrary.yaml) uses a
 Ceph-specific StorageClass and should be replaced or removed.
 
@@ -162,9 +169,10 @@ creates a PV without a volume source, which a real API server rejects.
 ## Suggested order
 
 1. Harness fixes A2, A3, and A5–A11, including the approved minimal RBAC A1;
-   then B1–B4. **Implemented; live cluster validation remains.** The AGENTS.md
+   then B1–B4. **Implemented and passed on Linux/arm64 kind.** The AGENTS.md
    e2e rule (step 14) is also in place.
-2. A4 and the NFS provisioner; then B5–B9 and B11–B13.
+2. Single-node RWX provisioner; then B5–B9 and B11–B13. A4 and managed-PVC
+   reconciliation fixes are implemented; live initialization needs validation.
 3. Sonarr flows B14–B20.
 4. Implement the approved `pvcRetentionPolicy` API and behavior, then verify
    both deletion choices in B12.
@@ -178,13 +186,16 @@ creates a PV without a volume source, which a real API server rejects.
   watches and reconciliation (A1).
 - **Init Job architecture:** approved; remove the hardcoded arm64 selector and
   target the kind node architecture (A4).
-- **ReadWriteMany storage:** use an NFS provisioner for the kind test cluster.
+- **ReadWriteMany storage:** use an isolated shared-path local provisioner on
+  the single-node kind cluster, and verify concurrent pod access. This is not
+  a multi-node storage test.
 - **MediaLibrary PVC retention:** support both deletion behaviors with the
-  approved schema `spec.pvcRetentionPolicy`, enum values `Delete` and `Retain`,
-  default `Delete`. This preserves existing behavior for resources that omit
-  the field. The setting applies to operator-managed PVCs; referenced existing
-  PVCs remain user-owned and untouched. `Retain` requires removing the
-  MediaLibrary owner reference before the finalizer completes.
+  proposed schema `spec.pvcRetentionPolicy`, enum values `Delete` and `Retain`,
+  default `Delete`. This would preserve existing behavior for resources that
+  omit the field. The setting would apply to operator-managed PVCs; referenced
+  existing PVCs would remain user-owned and untouched. `Retain` would require
+  removing the MediaLibrary owner reference before the finalizer completes.
+  Obtain explicit approval for the schema and cleanup behavior before editing.
 - **Cluster:** use a local kind cluster. This is a target choice, not approval
   to mutate a cluster; obtain explicit confirmation before creating it. A
   working container engine and kind setup are also still prerequisites.

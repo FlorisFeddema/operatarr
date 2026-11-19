@@ -38,9 +38,27 @@ running these commands. The Makefile defaults to Podman; use
 `CONTAINER_TOOL=docker` for Docker. For Podman, kind may require
 `KIND_EXPERIMENTAL_PROVIDER=podman`. Set `KIND_CLUSTER` to use a different
 cluster name. The suite refuses to run unless the current kubeconfig context
-matches `kind-$(KIND_CLUSTER)`. It does not create or delete the cluster; those
-actions are explicit Makefile targets. Use only a disposable cluster because
-the suite applies and removes cluster-scoped CRDs and RBAC.
+matches `kind-$(KIND_CLUSTER)` and explicitly targets that context for each
+cluster command. The manager and jobrunner images are built for the kind
+nodes' architecture; all nodes must have the same Linux architecture. The
+MediaLibrary tests require a single-node kind cluster and its default
+local-path provisioner. They temporarily install a separate provisioner,
+StorageClass, and RBAC in a uniquely named namespace, reusing the kind
+provisioner and helper images. Its test volumes use isolated directories under
+`/tmp` inside the kind node. Two pods exercise concurrent read/write access;
+this single-node setup does not validate multi-node sharing or enforce
+requested storage capacity. Test PVCs, volumes, and directories are removed
+before the provisioner is removed. If cleanup fails, the suite leaves the
+operator and test storage in place for recovery.
+The suite does not create or delete the cluster; those actions are explicit
+Makefile targets. Use only a disposable cluster because the suite applies and
+removes cluster-scoped CRDs and RBAC.
+
+MediaLibrary initialization Jobs are not pinned to a specific architecture.
+The configured jobrunner image must support every architecture on which those
+Jobs may be scheduled. For managed PVCs, the operator preserves
+Kubernetes-assigned claim fields and starts the initialization Job after
+reconciling the claim; the Job can wait for the PVC to bind.
 
 The current engineering intake and prioritized follow-up work are tracked in
 [docs/roadmap.md](docs/roadmap.md).

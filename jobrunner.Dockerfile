@@ -9,14 +9,14 @@ RUN go mod download
 
 COPY jobrunner/ jobrunner/
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o jobrunner jobrunner/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o /workspace/jobrunner-bin jobrunner/main.go
 
 FROM gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 
 LABEL org.opencontainers.image.source="https://github.com/FlorisFeddema/operatarr"
 
 WORKDIR /
-COPY --from=builder /workspace/jobrunner .
+COPY --from=builder /workspace/jobrunner-bin /jobrunner
 USER 65532:65532
 
 ENTRYPOINT ["/jobrunner"]

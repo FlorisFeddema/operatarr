@@ -95,7 +95,7 @@ test: manifests generate fmt vet envtest ## Run tests.
 # The e2e suite requires an existing kind cluster named by KIND_CLUSTER.
 .PHONY: test-e2e
 test-e2e:
-	KIND_CLUSTER="$(KIND_CLUSTER)" go test ./test/e2e/ -v -ginkgo.v
+	KIND_CLUSTER="$(KIND_CLUSTER)" go test ./test/e2e/ -v -ginkgo.v -timeout=20m
 
 .PHONY: kind-create
 kind-create:

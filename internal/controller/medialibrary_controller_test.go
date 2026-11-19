@@ -38,7 +38,10 @@ import (
 	"github.com/FlorisFeddema/operatarr/jobrunner/medialibrary"
 )
 
-const defaultNamespace = "default"
+const (
+	defaultNamespace   = "default"
+	testJobRunnerImage = "test:latest"
+)
 
 var _ = Describe("MediaLibrary Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -104,7 +107,7 @@ var _ = Describe("MediaLibrary initialization Job spec", func() {
 			Status:     feddemadevv1alpha1.MediaLibraryStatus{EffectivePVC: &effectivePVC},
 		}
 
-		podSpec := newPvcInitJob(ml, "test:latest").Spec.Template.Spec
+		podSpec := newPvcInitJob(ml, testJobRunnerImage).Spec.Template.Spec
 		Expect(podSpec.Volumes).To(HaveLen(1))
 		Expect(podSpec.Volumes[0].PersistentVolumeClaim).NotTo(BeNil())
 		Expect(podSpec.Volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(effectivePVC))
@@ -114,6 +117,16 @@ var _ = Describe("MediaLibrary initialization Job spec", func() {
 			MountPath: medialibrary.DefaultLibraryRootPath,
 		}))
 		Expect(medialibrary.DefaultLibraryRootPath).To(Equal("/library"))
+	})
+
+	It("does not restrict the initialization Job to a particular architecture", func() {
+		effectivePVC := "library-pvc"
+		ml := &feddemadevv1alpha1.MediaLibrary{
+			Status: feddemadevv1alpha1.MediaLibraryStatus{EffectivePVC: &effectivePVC},
+		}
+
+		podSpec := newPvcInitJob(ml, testJobRunnerImage).Spec.Template.Spec
+		Expect(podSpec.NodeSelector).NotTo(HaveKey("kubernetes.io/arch"))
 	})
 })
 
@@ -135,7 +148,7 @@ var _ = Describe("MediaLibrary initialization Job status", func() {
 		Expect(k8sClient.Status().Update(ctx, ml)).To(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ml), ml)).To(Succeed())
 
-		job := newPvcInitJob(ml, "test:latest")
+		job := newPvcInitJob(ml, testJobRunnerImage)
 		Expect(k8sClient.Create(ctx, job)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, job)).To(Succeed()) })
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(job), job)).To(Succeed())
@@ -210,6 +223,43 @@ func createMediaLibraryWithFinalizer(ctx context.Context, reconciler *MediaLibra
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ml.Name, Namespace: ml.Namespace}, current)).To(Succeed())
 	Expect(current.Finalizers).To(ContainElement(finalizerName))
 }
+
+var _ = Describe("MediaLibrary finalization", func() {
+	It("persists finalizer removal without deleting a referenced PVC", func() {
+		ctx := context.Background()
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "finalization-existing-pvc", Namespace: defaultNamespace},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pvc))).To(Succeed()) })
+
+		ml := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: "finalization-library", Namespace: defaultNamespace},
+			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{PVCName: &pvc.Name}},
+		}
+		reconciler := &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
+
+		Expect(k8sClient.Delete(ctx, ml)).To(Succeed())
+		req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(ml)}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, req.NamespacedName, &feddemadevv1alpha1.MediaLibrary{}))
+		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(BeTrue())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pvc), &corev1.PersistentVolumeClaim{})).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
 
 var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 	var (
@@ -339,7 +389,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		reconciler = &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconciler = &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), JobRunnerImage: testJobRunnerImage}
 	})
 
 	It("resizes a managed PVC when MediaLibrary size increases", func() {

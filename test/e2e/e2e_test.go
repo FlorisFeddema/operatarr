@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -35,6 +34,10 @@ import (
 const (
 	namespace          = "operatarr-system"
 	namespaceFlag      = "--namespace"
+	kubectlGet         = "get"
+	kubectlDelete      = "delete"
+	podResource        = "pods"
+	ignoreNotFoundFlag = "--ignore-not-found=true"
 	managerDeployment  = "operatarr-controller-manager"
 	managerSelector    = "control-plane=controller-manager"
 	leaderElectionName = "f9ce3012.feddema.dev"
@@ -59,7 +62,7 @@ var _ = Describe("controller", Ordered, func() {
 
 		By("installing CRDs and deploying the manager from the e2e overlay")
 		overlayApplyAttempted = true
-		_, err := utils.Run(exec.Command("kubectl", "apply", "-k", "test/e2e/overlay"))
+		_, err := utils.Run(utils.KindKubectl("apply", "-k", "test/e2e/overlay"))
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	})
 
@@ -68,18 +71,33 @@ var _ = Describe("controller", Ordered, func() {
 			return
 		}
 
-		By("removing e2e-only metrics access")
 		var cleanupErrors []error
-		metricsCleanup := exec.Command("kubectl", "delete", "-f",
-			"test/e2e/manifests/metrics-reader.yaml", "--ignore-not-found=true")
+		operatorCleanupBlocked := false
+		if mediaNamespaceCreated {
+			By("removing MediaLibrary resources before uninstalling test storage")
+			if err := cleanupMediaResources(); err != nil {
+				operatorCleanupBlocked = true
+				cleanupErrors = append(cleanupErrors, err)
+			} else {
+				mediaNamespaceCreated = false
+				mediaNamespace = ""
+			}
+		}
+
+		By("removing e2e-only metrics access")
+		metricsCleanup := utils.KindKubectl(kubectlDelete, "-f",
+			"test/e2e/manifests/metrics-reader.yaml", ignoreNotFoundFlag)
 		if _, err := utils.Run(metricsCleanup); err != nil {
 			cleanupErrors = append(cleanupErrors, err)
 		}
 
-		if overlayApplyAttempted {
+		if overlayApplyAttempted && operatorCleanupBlocked {
+			cleanupErrors = append(cleanupErrors,
+				errors.New("leaving the operator installed because MediaLibrary cleanup failed"))
+		} else if overlayApplyAttempted {
 			By("undeploying the manager and removing its CRDs and RBAC")
-			overlayCleanup := exec.Command("kubectl", "delete", "-k",
-				"test/e2e/overlay", "--ignore-not-found=true")
+			overlayCleanup := utils.KindKubectl(kubectlDelete, "-k",
+				"test/e2e/overlay", ignoreNotFoundFlag)
 			if _, err := utils.Run(overlayCleanup); err != nil {
 				cleanupErrors = append(cleanupErrors, err)
 			}
@@ -96,7 +114,7 @@ var _ = Describe("controller", Ordered, func() {
 	Context("Operator", func() {
 		It("starts and remains healthy after cache synchronization", func() {
 			By("waiting for the manager Deployment to become available")
-			cmd := exec.Command("kubectl", "wait",
+			cmd := utils.KindKubectl("wait",
 				"--for=condition=Available",
 				"--timeout=3m",
 				"deployment/"+managerDeployment,
@@ -106,7 +124,7 @@ var _ = Describe("controller", Ordered, func() {
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("waiting for the manager pod to become ready")
-			cmd = exec.Command("kubectl", "wait",
+			cmd = utils.KindKubectl("wait",
 				"--for=condition=Ready",
 				"--timeout=3m",
 				"pod", "-l", managerSelector,
@@ -119,7 +137,7 @@ var _ = Describe("controller", Ordered, func() {
 			Consistently(func(g Gomega) {
 				podName, err := controllerPodName()
 				g.Expect(err).NotTo(HaveOccurred())
-				restarts, err := utils.Run(exec.Command("kubectl", "get", "pod", podName,
+				restarts, err := utils.Run(utils.KindKubectl(kubectlGet, "pod", podName,
 					"-o", "jsonpath={.status.containerStatuses[0].restartCount}",
 					namespaceFlag, namespace,
 				))
@@ -128,7 +146,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, stabilityWindow, 5*time.Second).Should(Succeed())
 
 			By("checking manager logs for RBAC errors")
-			logs, err := utils.Run(exec.Command("kubectl", "logs",
+			logs, err := utils.Run(utils.KindKubectl("logs",
 				"deployment/"+managerDeployment,
 				"--all-containers=true",
 				namespaceFlag, namespace,
@@ -141,17 +159,17 @@ var _ = Describe("controller", Ordered, func() {
 
 		It("serves metrics to an authorized service account", func() {
 			By("creating a service account bound to the metrics-reader role")
-			_, err := utils.Run(exec.Command("kubectl", "apply", "-f",
+			_, err := utils.Run(utils.KindKubectl("apply", "-f",
 				"test/e2e/manifests/metrics-reader.yaml"))
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			DeferCleanup(func() {
-				_, cleanupErr := utils.Run(exec.Command("kubectl", "delete", "-f",
-					"test/e2e/manifests/metrics-reader.yaml", "--ignore-not-found=true"))
+				_, cleanupErr := utils.Run(utils.KindKubectl(kubectlDelete, "-f",
+					"test/e2e/manifests/metrics-reader.yaml", ignoreNotFoundFlag))
 				Expect(cleanupErr).NotTo(HaveOccurred())
 			})
 
 			By("requesting the HTTPS metrics endpoint from inside the cluster")
-			output, err := utils.Run(exec.Command("kubectl", "run", "e2e-metrics-check",
+			output, err := utils.Run(utils.KindKubectl("run", "e2e-metrics-check",
 				"--image=curlimages/curl:8.12.1",
 				"--restart=Never",
 				"--rm",
@@ -159,13 +177,11 @@ var _ = Describe("controller", Ordered, func() {
 				namespaceFlag, namespace,
 				"--overrides", `{"apiVersion":"v1","kind":"Pod","spec":{"serviceAccountName":"operatarr-e2e-metrics-reader"}}`,
 				"--command", "--",
-				"curl",
-				"--insecure",
-				"--fail",
-				"--silent",
-				"--show-error",
-				"--write-out", "\nE2E_HTTP_STATUS:%{http_code}\n",
-				"https://operatarr-controller-manager-metrics-service:8443/metrics",
+				"sh", "-ec", `token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+printf 'header = "Authorization: Bearer %s"\n' "$token" |
+  curl --config - --insecure --fail --silent --show-error \
+    --write-out '\nE2E_HTTP_STATUS:%{http_code}\n' \
+    https://operatarr-controller-manager-metrics-service:8443/metrics`,
 			))
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("# HELP"))
@@ -178,7 +194,7 @@ var _ = Describe("controller", Ordered, func() {
 				podName, err := controllerPodName()
 				g.Expect(err).NotTo(HaveOccurred())
 
-				holder, err := utils.Run(exec.Command("kubectl", "get", "lease", leaderElectionName,
+				holder, err := utils.Run(utils.KindKubectl(kubectlGet, "lease", leaderElectionName,
 					"-o", "jsonpath={.spec.holderIdentity}",
 					namespaceFlag, namespace,
 				))
@@ -192,7 +208,7 @@ var _ = Describe("controller", Ordered, func() {
 				"medialibraries.feddema.dev",
 				"sonarrs.feddema.dev",
 			} {
-				cmd := exec.Command("kubectl", "wait",
+				cmd := utils.KindKubectl("wait",
 					"--for=condition=Established",
 					"--timeout=60s",
 					"crd/"+name,
@@ -202,19 +218,16 @@ var _ = Describe("controller", Ordered, func() {
 			}
 		})
 	})
+
+	mediaLibrarySpecs()
 })
 
 func verifyKindContext() error {
-	cluster := os.Getenv("KIND_CLUSTER")
-	if cluster == "" {
-		cluster = "operatarr-e2e"
-	}
-
 	output, err := utils.Run(exec.Command("kubectl", "config", "current-context"))
 	if err != nil {
 		return fmt.Errorf("unable to read current Kubernetes context: %w", err)
 	}
-	expected := "kind-" + cluster
+	expected := "kind-" + utils.KindClusterName()
 	current := strings.TrimSpace(string(output))
 	if current != expected {
 		return fmt.Errorf("refusing to run e2e tests in context %q; expected %q", current, expected)
@@ -223,6 +236,11 @@ func verifyKindContext() error {
 }
 
 func prepareImages() (result error) {
+	platform, err := utils.KindNodePlatform()
+	if err != nil {
+		return fmt.Errorf("unable to select e2e image platform: %w", err)
+	}
+
 	imageDir, err := os.MkdirTemp("", "operatarr-e2e-images-")
 	if err != nil {
 		return fmt.Errorf("unable to create temporary image directory: %w", err)
@@ -233,7 +251,6 @@ func prepareImages() (result error) {
 		}
 	}()
 
-	platform := "linux/" + runtime.GOARCH
 	cmd := exec.Command("make", "e2e-images",
 		"E2E_PLATFORM="+platform,
 		"E2E_IMAGE_DIR="+imageDir,
@@ -251,7 +268,7 @@ func prepareImages() (result error) {
 }
 
 func controllerPodName() (string, error) {
-	cmd := exec.Command("kubectl", "get", "pods",
+	cmd := utils.KindKubectl(kubectlGet, podResource,
 		"-l", managerSelector,
 		"-o", "go-template={{ range .items }}"+
 			"{{ if not .metadata.deletionTimestamp }}{{ .metadata.name }}"+
@@ -272,14 +289,23 @@ func controllerPodName() (string, error) {
 func collectDiagnostics() {
 	fmt.Fprintln(GinkgoWriter, "E2E failure diagnostics:")
 	commands := [][]string{
-		{"get", "pods", "-o", "wide", namespaceFlag, namespace},
-		{"describe", "pods", "-l", managerSelector, namespaceFlag, namespace},
+		{kubectlGet, podResource, "-o", "wide", namespaceFlag, namespace},
+		{"describe", podResource, "-l", managerSelector, namespaceFlag, namespace},
 		{"logs", "deployment/" + managerDeployment, "--all-containers=true", namespaceFlag, namespace},
-		{"get", "events", "--sort-by=.metadata.creationTimestamp", namespaceFlag, namespace},
+		{kubectlGet, "events", "--sort-by=.metadata.creationTimestamp", "-o", "json", namespaceFlag, namespace},
+	}
+	if mediaNamespace != "" {
+		commands = append(commands,
+			[]string{kubectlGet, "medialibraries,pvc,jobs,pods", "-o", "wide", namespaceFlag, mediaNamespace},
+			[]string{"describe", podResource, namespaceFlag, mediaNamespace},
+			[]string{"logs", "deployment/" + mediaNamespace, namespaceFlag, mediaNamespace},
+			[]string{kubectlGet, "events", "--sort-by=.metadata.creationTimestamp", "-o", "json", namespaceFlag, mediaNamespace},
+		)
 	}
 	for _, args := range commands {
-		fmt.Fprintf(GinkgoWriter, "$ kubectl %s\n", strings.Join(args, " "))
-		output, err := utils.Run(exec.Command("kubectl", args...))
+		cmd := utils.KindKubectl(args...)
+		fmt.Fprintf(GinkgoWriter, "$ %s\n", strings.Join(cmd.Args, " "))
+		output, err := utils.Run(cmd)
 		if len(output) > 0 {
 			fmt.Fprintln(GinkgoWriter, string(output))
 		}

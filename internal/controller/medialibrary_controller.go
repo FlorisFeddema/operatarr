@@ -153,6 +153,9 @@ func (r *mediaLibraryReconcile) preconcile() (bool, error) {
 			if ok := controllerutil.RemoveFinalizer(&r.object, finalizerName); !ok {
 				return true, errors.New("unable to remove finalizer")
 			}
+			if err := r.Update(r.ctx, &r.object); err != nil {
+				return true, fmt.Errorf("unable to remove MediaLibrary finalizer: %w", err)
+			}
 			return true, nil
 		}
 		return true, errors.New("deletion requested but finalizer not found")
@@ -226,11 +229,12 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		r.log.V(1).Info("Checking storage class", "pvcStorageClass", pvc.Spec.StorageClassName, "libraryStorageClass", r.object.Spec.PVC.StorageClassName)
 		storageClass := cmp.Or(pvc.Spec.StorageClassName, r.object.Spec.PVC.StorageClassName)
 		pvc.SetLabels(mergeMap(pvc.GetLabels(), labels))
-		pvc.Spec = corev1.PersistentVolumeClaimSpec{
-			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
-			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{"storage": r.object.Spec.PVC.Size}},
-			StorageClassName: storageClass,
+		pvc.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}
+		if pvc.Spec.Resources.Requests == nil {
+			pvc.Spec.Resources.Requests = corev1.ResourceList{}
 		}
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = r.object.Spec.PVC.Size
+		pvc.Spec.StorageClassName = storageClass
 		pvc.Annotations = mergeMap(pvc.GetAnnotations(), r.object.Spec.PVC.Annotations)
 
 		return nil
@@ -241,6 +245,9 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 
 	if opResult != controllerutil.OperationResultNone {
 		logResourceOperation(r.log, "PersistentVolumeClaim", pvc, opResult)
+	}
+	if opResult != controllerutil.OperationResultNone ||
+		r.object.Status.EffectivePVC == nil || *r.object.Status.EffectivePVC != pvc.Name {
 		cond := metav1.Condition{
 			Type:    typeAvailable,
 			Status:  metav1.ConditionFalse,
@@ -250,7 +257,9 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		utils.MergeConditions(&r.object.Status.Conditions, cond)
 		r.object.Status.Initialized = false
 		r.object.Status.EffectivePVC = &pvc.Name
-		return r.updateStatus()
+		if err := r.updateStatus(); err != nil {
+			return err
+		}
 	}
 
 	if !r.object.Status.Initialized {
@@ -394,7 +403,6 @@ func newPvcInitJob(f *feddemadevv1alpha1.MediaLibrary, image string) *v1.Job {
 						},
 					},
 					RestartPolicy: corev1.RestartPolicyNever,
-					NodeSelector:  map[string]string{"kubernetes.io/arch": "arm64"}, // TODO: remove once multi-arch support is added
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot:       new(true),
 						RunAsUser:          permissions.RunAsUser,
