@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:b377a08d19467bcc08180cb95098448cac31c1a8423e287ce709a9eb09e14762
+FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:e15941f70f26542ef9b0ef4bb64f88b8ecdfe8c3372e730ab6e405792805e742
 
 ARG TARGETARCH
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
