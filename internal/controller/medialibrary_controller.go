@@ -147,7 +147,9 @@ func (r *mediaLibraryReconcile) preconcile() (bool, error) {
 		if controllerutil.ContainsFinalizer(&r.object, finalizerName) {
 			r.log.Info("performing finalization before deletion of mediaLibrary")
 
-			// TODO: perform finalization
+			if err := r.finalizeManagedPVC(); err != nil {
+				return true, err
+			}
 
 			// Remove finalizer when done
 			if ok := controllerutil.RemoveFinalizer(&r.object, finalizerName); !ok {
@@ -161,6 +163,42 @@ func (r *mediaLibraryReconcile) preconcile() (bool, error) {
 		return true, errors.New("deletion requested but finalizer not found")
 	}
 	return false, nil
+}
+
+func (r *mediaLibraryReconcile) finalizeManagedPVC() error {
+	if r.object.Spec.PVC.PVCName != nil ||
+		r.object.Spec.PVCRetentionPolicy != feddemadevv1alpha1.PVCRetentionPolicyRetain {
+		return nil
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	key := client.ObjectKey{Namespace: r.object.Namespace, Name: r.object.Name}
+	if err := r.Get(r.ctx, key, pvc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("unable to fetch managed PVC %s for retention: %w", key, err)
+	}
+
+	ownerReferences := pvc.GetOwnerReferences()
+	retainedOwnerReferences := make([]metav1.OwnerReference, 0, len(ownerReferences))
+	for _, ownerReference := range ownerReferences {
+		if ownerReference.UID != r.object.UID {
+			retainedOwnerReferences = append(retainedOwnerReferences, ownerReference)
+		}
+	}
+	if len(retainedOwnerReferences) == len(ownerReferences) {
+		return nil
+	}
+
+	before := pvc.DeepCopy()
+	pvc.SetOwnerReferences(retainedOwnerReferences)
+	if err := r.Patch(r.ctx, pvc, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("unable to retain managed PVC %s: %w", key, err)
+	}
+
+	r.log.Info("Retained managed PVC", "resource", key)
+	return nil
 }
 
 func (r *mediaLibraryReconcile) reconcileMainPvc() error {

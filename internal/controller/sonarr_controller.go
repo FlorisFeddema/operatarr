@@ -26,6 +26,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -70,7 +71,7 @@ type sonarrReconcile struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;patch
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch;delete
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -82,9 +83,7 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{},
 			builder.WithPredicates(genChangedPredicate),
 		).
-		Owns(&corev1.Service{},
-			builder.WithPredicates(genChangedPredicate),
-		).
+		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{},
 			builder.WithPredicates(genChangedPredicate),
 		).
@@ -157,21 +156,33 @@ func (r *sonarrReconcile) reconcile() error {
 		return err
 	}
 
+	if !r.object.Spec.HttpRouteSpec.Enabled {
+		if err := r.reconcileHttpRoute(); err != nil {
+			err = fmt.Errorf("unable to reconcile HTTPRoute: %w", err)
+			return errors.Join(err, r.setAvailableCondition(metav1.ConditionFalse, "ReconciliationFailed", err.Error()))
+		}
+	}
+
 	if err := r.loadMediaLibrary(); err != nil {
 		return errors.Join(err, r.setAvailableCondition(metav1.ConditionFalse, "MediaLibraryUnavailable", err.Error()))
 	}
 
 	r.log.V(1).Info("Running Sonarr reconcilers")
-	steps := []struct {
+	type reconcileStep struct {
 		name string
 		run  func() error
-	}{
+	}
+	steps := []reconcileStep{
 		{name: "headless Service", run: r.reconcileHeadlessService},
 		{name: "Service", run: r.reconcileService},
-		{name: "HTTPRoute", run: r.reconcileHttpRoute},
-		{name: "media PersistentVolume", run: r.reconcileMediaPersistentVolume},
-		{name: "StatefulSet", run: r.reconcileStatefulSet},
 	}
+	if r.object.Spec.HttpRouteSpec.Enabled {
+		steps = append(steps, reconcileStep{name: "HTTPRoute", run: r.reconcileHttpRoute})
+	}
+	steps = append(steps,
+		reconcileStep{name: "media PersistentVolume", run: r.reconcileMediaPersistentVolume},
+		reconcileStep{name: "StatefulSet", run: r.reconcileStatefulSet},
+	)
 	for _, step := range steps {
 		if err := step.run(); err != nil {
 			err = fmt.Errorf("unable to reconcile %s: %w", step.name, err)
@@ -260,6 +271,9 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 			// Remove finalizer when done
 			if ok := controllerutil.RemoveFinalizer(&r.object, finalizerName); !ok {
 				return true, errors.New("unable to remove finalizer")
+			}
+			if err := r.Update(r.ctx, &r.object); err != nil {
+				return true, fmt.Errorf("unable to update Sonarr finalizer: %w", err)
 			}
 			return true, nil
 		}
@@ -433,16 +447,14 @@ func (r *sonarrReconcile) reconcileService() error {
 		}
 
 		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
-		svc.Spec = corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{{
-				Name:       sonarrHTTPPortName,
-				Port:       SonarrPort,
-				TargetPort: intstr.FromInt32(SonarrPort),
-				Protocol:   corev1.ProtocolTCP,
-			}},
-			Selector: labels,
-			Type:     corev1.ServiceTypeClusterIP,
-		}
+		svc.Spec.Ports = []corev1.ServicePort{{
+			Name:       sonarrHTTPPortName,
+			Port:       SonarrPort,
+			TargetPort: intstr.FromInt32(SonarrPort),
+			Protocol:   corev1.ProtocolTCP,
+		}}
+		svc.Spec.Selector = labels
+		svc.Spec.Type = corev1.ServiceTypeClusterIP
 
 		return nil
 	})
@@ -467,17 +479,15 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 		}
 
 		svc.SetLabels(mergeMap(svc.GetLabels(), labels))
-		svc.Spec = corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{{
-				Name:       sonarrHTTPPortName,
-				Port:       SonarrPort,
-				TargetPort: intstr.FromInt32(SonarrPort),
-				Protocol:   corev1.ProtocolTCP,
-			}},
-			Selector:  labels,
-			ClusterIP: corev1.ClusterIPNone,
-			Type:      corev1.ServiceTypeClusterIP,
-		}
+		svc.Spec.Ports = []corev1.ServicePort{{
+			Name:       sonarrHTTPPortName,
+			Port:       SonarrPort,
+			TargetPort: intstr.FromInt32(SonarrPort),
+			Protocol:   corev1.ProtocolTCP,
+		}}
+		svc.Spec.Selector = labels
+		svc.Spec.ClusterIP = corev1.ClusterIPNone
+		svc.Spec.Type = corev1.ServiceTypeClusterIP
 
 		return nil
 	})
@@ -490,10 +500,6 @@ func (r *sonarrReconcile) reconcileHeadlessService() error {
 }
 
 func (r *sonarrReconcile) reconcileHttpRoute() error {
-	if !r.object.Spec.HttpRouteSpec.Enabled {
-		return nil
-	}
-	r.log.V(1).Info("Creating or patching HTTPRoute")
 	if !r.GatewayAPIAvailable {
 		r.log.V(1).Info("Gateway API is unavailable; skipping HTTPRoute while continuing Sonarr reconciliation")
 		return nil
@@ -502,6 +508,35 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 	route := &gatewayv1.HTTPRoute{}
 	route.Name = r.object.Name
 	route.Namespace = r.object.Namespace
+
+	if !r.object.Spec.HttpRouteSpec.Enabled {
+		key := client.ObjectKeyFromObject(route)
+		if err := r.Get(r.ctx, key, route); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("unable to fetch HTTPRoute %s for deletion: %w", key, err)
+		}
+		if !metav1.IsControlledBy(route, &r.object) {
+			return fmt.Errorf("cannot delete HTTPRoute %s: not controlled by Sonarr %s",
+				key, client.ObjectKeyFromObject(&r.object))
+		}
+		if !route.DeletionTimestamp.IsZero() {
+			return nil
+		}
+		if err := r.Delete(r.ctx, route, client.Preconditions{
+			UID: &route.UID, ResourceVersion: &route.ResourceVersion,
+		}); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("unable to delete HTTPRoute %s: %w", key, err)
+		}
+		r.log.Info("Resource deletion requested", "kind", "HTTPRoute", "resource", key)
+		return nil
+	}
+
+	r.log.V(1).Info("Creating or patching HTTPRoute")
 	labels := labelsForResource(r.object.Name)
 
 	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, route, func() error {

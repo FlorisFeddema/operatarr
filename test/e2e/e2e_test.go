@@ -99,7 +99,17 @@ var _ = Describe("controller", Ordered, func() {
 			overlayCleanup := utils.KindKubectl(kubectlDelete, "-k",
 				"test/e2e/overlay", ignoreNotFoundFlag)
 			if _, err := utils.Run(overlayCleanup); err != nil {
+				operatorCleanupBlocked = true
 				cleanupErrors = append(cleanupErrors, err)
+			}
+		}
+		if gatewayAPICRDInstalled && !operatorCleanupBlocked {
+			By("removing the test-only Gateway API CRD")
+			if _, err := utils.Run(utils.KindKubectl(kubectlDelete, "crd",
+				"httproutes.gateway.networking.k8s.io", ignoreNotFoundFlag, "--wait=true", "--timeout=2m")); err != nil {
+				cleanupErrors = append(cleanupErrors, err)
+			} else {
+				gatewayAPICRDInstalled = false
 			}
 		}
 		Expect(errors.Join(cleanupErrors...)).NotTo(HaveOccurred())
@@ -169,11 +179,15 @@ var _ = Describe("controller", Ordered, func() {
 			})
 
 			By("requesting the HTTPS metrics endpoint from inside the cluster")
-			output, err := utils.Run(utils.KindKubectl("run", "e2e-metrics-check",
+			DeferCleanup(func() {
+				_, cleanupErr := utils.Run(utils.KindKubectl(kubectlDelete, "pod", "e2e-metrics-check",
+					namespaceFlag, namespace, ignoreNotFoundFlag))
+				Expect(cleanupErr).NotTo(HaveOccurred())
+			})
+			_, err = utils.Run(utils.KindKubectl("run", "e2e-metrics-check",
 				"--image=curlimages/curl:8.12.1",
 				"--restart=Never",
-				"--rm",
-				"-i",
+				"--attach=false",
 				namespaceFlag, namespace,
 				"--overrides", `{"apiVersion":"v1","kind":"Pod","spec":{"serviceAccountName":"operatarr-e2e-metrics-reader"}}`,
 				"--command", "--",
@@ -183,6 +197,13 @@ printf 'header = "Authorization: Bearer %s"\n' "$token" |
     --write-out '\nE2E_HTTP_STATUS:%{http_code}\n' \
     https://operatarr-controller-manager-metrics-service:8443/metrics`,
 			))
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			_, err = utils.Run(utils.KindKubectl("wait", "pod/e2e-metrics-check",
+				"--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m",
+				namespaceFlag, namespace))
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			output, err := utils.Run(utils.KindKubectl("logs", "e2e-metrics-check",
+				namespaceFlag, namespace))
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("# HELP"))
 			Expect(string(output)).To(ContainSubstring("E2E_HTTP_STATUS:200"))
@@ -220,6 +241,7 @@ printf 'header = "Authorization: Bearer %s"\n' "$token" |
 	})
 
 	mediaLibrarySpecs()
+	sonarrSpecs()
 })
 
 func verifyKindContext() error {
@@ -296,7 +318,8 @@ func collectDiagnostics() {
 	}
 	if mediaNamespace != "" {
 		commands = append(commands,
-			[]string{kubectlGet, "medialibraries,pvc,jobs,pods", "-o", "wide", namespaceFlag, mediaNamespace},
+			[]string{kubectlGet, "medialibraries,sonarrs,pvc,jobs,pods,services,statefulsets", "-o", "wide",
+				namespaceFlag, mediaNamespace},
 			[]string{"describe", podResource, namespaceFlag, mediaNamespace},
 			[]string{"logs", "deployment/" + mediaNamespace, namespaceFlag, mediaNamespace},
 			[]string{kubectlGet, "events", "--sort-by=.metadata.creationTimestamp", "-o", "json", namespaceFlag, mediaNamespace},

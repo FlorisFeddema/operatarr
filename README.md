@@ -16,6 +16,10 @@ TODO: Provide installation instructions.
 
 TODO: Add examples for running and using operatarr.
 
+For Sonarr resources, disabling `spec.sonarrHttpRouteSpec.enabled` deletes the
+Sonarr-owned HTTPRoute. Re-enabling it recreates the route when Gateway API is
+available and the referenced MediaLibrary is initialized.
+
 ## CI
 
 Argo Workflows and Argo Events manifests for running this repository's CI from an external Argo installation live in [ci/argo/README.md](ci/argo/README.md).
@@ -29,6 +33,9 @@ The cluster-dependent e2e suite is excluded and remains available through
 jobrunner images, installs the CRDs and operator, and removes those resources
 afterward. It also checks the manager health, metrics authorization,
 leader-election lease, and CRD establishment.
+The Sonarr flows require the Gateway API HTTPRoute CRD to be absent initially.
+They temporarily install the CRD from the pinned Go module and restart the
+manager to verify Gateway API discovery, then remove the CRD during cleanup.
 
 With `kind`, `kubectl`, and a working Docker or Podman installation available,
 run `make kind-create`, `make test-e2e`, and `make kind-delete`. The cluster
@@ -53,6 +60,12 @@ operator and test storage in place for recovery.
 The suite does not create or delete the cluster; those actions are explicit
 Makefile targets. Use only a disposable cluster because the suite applies and
 removes cluster-scoped CRDs and RBAC.
+
+The [E2E workflow](.github/workflows/e2e.yaml) runs this suite in GitHub
+Actions only when triggered manually (`workflow_dispatch`). It uses Docker and
+a kind cluster on the runner, which it always deletes afterwards, and uploads
+the test output and exported kind logs as the `e2e-diagnostics` artifact when
+a run fails.
 
 MediaLibrary initialization Jobs are not pinned to a specific architecture.
 The configured jobrunner image must support every architecture on which those

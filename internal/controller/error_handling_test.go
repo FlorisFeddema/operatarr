@@ -105,6 +105,196 @@ func TestSonarrHTTPRouteErrorContext(t *testing.T) {
 	}
 }
 
+func testSonarrWithOwnedRoute() (*feddemadevv1alpha1.Sonarr, *gatewayv1.HTTPRoute) {
+	sonarr := &feddemadevv1alpha1.Sonarr{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testSonarrName, Namespace: defaultNamespace, UID: "sonarr-uid",
+			Finalizers: []string{finalizerName},
+		},
+		Spec: feddemadevv1alpha1.SonarrSpec{
+			MediaLibraryRef: corev1.ObjectReference{Kind: mediaLibraryKind, Name: "missing-library"},
+			HttpRouteSpec: feddemadevv1alpha1.SonarrHttpRouteSpec{
+				Hostname: "sonarr.example.com", ParentRef: gatewayv1.ParentReference{Name: "gateway"},
+			},
+		},
+	}
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: sonarr.Name, Namespace: sonarr.Namespace, UID: "route-uid",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(sonarr, feddemadevv1alpha1.GroupVersion.WithKind(sonarrKind)),
+			},
+		},
+	}
+	return sonarr, route
+}
+
+func TestSonarrDisabledHTTPRouteDeletion(t *testing.T) {
+	scheme := errorTestScheme(t)
+	sonarr, route := testSonarrWithOwnedRoute()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+	var logs []string
+	r := &sonarrReconcile{
+		SonarrReconciler: SonarrReconciler{Client: c, Scheme: scheme, GatewayAPIAvailable: true},
+		ctx:              context.Background(),
+		log:              funcr.NewJSON(func(output string) { logs = append(logs, output) }, funcr.Options{}),
+		object:           *sonarr,
+	}
+	for range 2 {
+		if err := r.reconcileHttpRoute(); err != nil {
+			t.Fatalf("disabled route reconciliation failed: %v", err)
+		}
+	}
+	if err := c.Get(r.ctx, client.ObjectKeyFromObject(route), &gatewayv1.HTTPRoute{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected the owned route to be deleted, got %v", err)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "Resource deletion requested") {
+		t.Fatalf("expected exactly one deletion log, got %v", logs)
+	}
+
+	r.object.Spec.HttpRouteSpec.Enabled = true
+	if err := r.reconcileHttpRoute(); err != nil {
+		t.Fatalf("re-enabling the route failed: %v", err)
+	}
+	recreated := &gatewayv1.HTTPRoute{}
+	if err := c.Get(r.ctx, client.ObjectKeyFromObject(route), recreated); err != nil {
+		t.Fatalf("expected route to be recreated: %v", err)
+	}
+	if !metav1.IsControlledBy(recreated, sonarr) {
+		t.Fatal("recreated route must be controlled by Sonarr")
+	}
+}
+
+func TestSonarrDisabledHTTPRouteDoesNotDeleteUnownedRoute(t *testing.T) {
+	for _, owner := range []string{"none", "another-sonarr"} {
+		t.Run(owner, func(t *testing.T) {
+			scheme := errorTestScheme(t)
+			sonarr, route := testSonarrWithOwnedRoute()
+			if owner == "none" {
+				route.OwnerReferences = nil
+			} else {
+				route.OwnerReferences[0].UID = "another-sonarr-uid"
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+			r := &sonarrReconcile{
+				SonarrReconciler: SonarrReconciler{Client: c, Scheme: scheme, GatewayAPIAvailable: true},
+				ctx:              context.Background(), log: logr.Discard(), object: *sonarr,
+			}
+			if err := r.reconcileHttpRoute(); err == nil || !strings.Contains(err.Error(), "not controlled by Sonarr") {
+				t.Fatalf("expected ownership error, got %v", err)
+			}
+			if err := c.Get(r.ctx, client.ObjectKeyFromObject(route), &gatewayv1.HTTPRoute{}); err != nil {
+				t.Fatalf("unowned route must remain: %v", err)
+			}
+		})
+	}
+}
+
+func TestSonarrDisabledHTTPRouteErrorsAndRetry(t *testing.T) {
+	scheme := errorTestScheme(t)
+	sonarr, route := testSonarrWithOwnedRoute()
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+	getErr := errors.New("route read rejected")
+	r := &sonarrReconcile{
+		SonarrReconciler: SonarrReconciler{Scheme: scheme, GatewayAPIAvailable: true},
+		ctx:              context.Background(), log: logr.Discard(), object: *sonarr,
+	}
+	r.Client = interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return getErr
+		},
+	})
+	if err := r.reconcileHttpRoute(); !errors.Is(err, getErr) || !strings.Contains(err.Error(), "HTTPRoute default/sonarr") {
+		t.Fatalf("expected contextual read error, got %v", err)
+	}
+
+	r.Client = interceptor.NewClient(base, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+			current := &gatewayv1.HTTPRoute{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(object), current); err != nil {
+				return err
+			}
+			current.Annotations = map[string]string{"changed": "true"}
+			if err := c.Update(ctx, current); err != nil {
+				return err
+			}
+			return c.Delete(ctx, object, options...)
+		},
+	})
+	if err := r.reconcileHttpRoute(); !apierrors.IsConflict(err) || !strings.Contains(err.Error(), "HTTPRoute default/sonarr") {
+		t.Fatalf("expected contextual delete conflict, got %v", err)
+	}
+	if err := base.Get(r.ctx, client.ObjectKeyFromObject(route), &gatewayv1.HTTPRoute{}); err != nil {
+		t.Fatalf("changed route must remain after conflict: %v", err)
+	}
+	r.Client = base
+	if err := r.reconcileHttpRoute(); err != nil {
+		t.Fatalf("deletion should succeed on retry: %v", err)
+	}
+}
+
+func TestSonarrDisabledHTTPRouteDeletedWhenMediaLibraryMissing(t *testing.T) {
+	scheme := errorTestScheme(t)
+	sonarr, route := testSonarrWithOwnedRoute()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sonarr, route).
+		WithStatusSubresource(sonarr).Build()
+	reconciler := &SonarrReconciler{Client: c, Scheme: scheme, GatewayAPIAvailable: true}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("expected the missing MediaLibrary error, got %v", err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(route), &gatewayv1.HTTPRoute{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("route must be removed even when the MediaLibrary is missing, got %v", err)
+	}
+}
+
+func TestSonarrDisabledHTTPRouteDeletionAndStatusFailure(t *testing.T) {
+	scheme := errorTestScheme(t)
+	sonarr, route := testSonarrWithOwnedRoute()
+	deleteErr := errors.New("route deletion rejected")
+	statusErr := errors.New("status update rejected")
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sonarr, route).
+		WithStatusSubresource(sonarr).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+			return deleteErr
+		},
+		SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return statusErr
+		},
+	}).Build()
+	reconciler := &SonarrReconciler{Client: c, Scheme: scheme, GatewayAPIAvailable: true}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)})
+	if !errors.Is(err, deleteErr) || !errors.Is(err, statusErr) || !strings.Contains(err.Error(), "HTTPRoute") {
+		t.Fatalf("expected the deletion and status causes, got %v", err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(route), &gatewayv1.HTTPRoute{}); err != nil {
+		t.Fatalf("route must remain after failed deletion: %v", err)
+	}
+}
+
+func TestSonarrHTTPRouteSkippedWithoutGatewayAPI(t *testing.T) {
+	scheme := errorTestScheme(t)
+	sonarr, _ := testSonarrWithOwnedRoute()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			t.Fatal("must not access HTTPRoutes when Gateway API is unavailable")
+			return nil
+		},
+	}).Build()
+	r := &sonarrReconcile{
+		SonarrReconciler: SonarrReconciler{Client: c, Scheme: scheme},
+		ctx:              context.Background(), log: logr.Discard(), object: *sonarr,
+	}
+	for _, enabled := range []bool{false, true} {
+		r.object.Spec.HttpRouteSpec.Enabled = enabled
+		if err := r.reconcileHttpRoute(); err != nil {
+			t.Fatalf("unavailable Gateway API should be skipped: %v", err)
+		}
+	}
+}
+
 func TestSonarrStepAndStatusErrors(t *testing.T) {
 	scheme := errorTestScheme(t)
 	sonarr := &feddemadevv1alpha1.Sonarr{
@@ -255,6 +445,38 @@ func TestMediaLibraryFinalizerUpdateFailure(t *testing.T) {
 	}
 	if err := base.Get(context.Background(), req.NamespacedName, current); !apierrors.IsNotFound(err) {
 		t.Fatalf("expected the finalized MediaLibrary to be deleted, got %v", err)
+	}
+}
+
+func TestSonarrFinalizerUpdateFailure(t *testing.T) {
+	scheme := errorTestScheme(t)
+	deletedAt := metav1.Now()
+	sonarr := &feddemadevv1alpha1.Sonarr{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testSonarrName, Namespace: defaultNamespace,
+			Finalizers: []string{finalizerName}, DeletionTimestamp: &deletedAt,
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sonarr).Build()
+	updateErr := errors.New("finalizer update rejected")
+	failingClient := interceptor.NewClient(base, interceptor.Funcs{
+		Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+			return updateErr
+		},
+	})
+	reconciler := &SonarrReconciler{Client: failingClient, Scheme: scheme}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)}
+
+	_, err := reconciler.Reconcile(context.Background(), req)
+	if !errors.Is(err, updateErr) || !strings.Contains(err.Error(), "Sonarr finalizer") {
+		t.Fatalf("expected contextual finalizer update error, got %v", err)
+	}
+	current := &feddemadevv1alpha1.Sonarr{}
+	if err := base.Get(context.Background(), req.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(current, finalizerName) {
+		t.Fatal("failed update must leave the persisted finalizer intact")
 	}
 }
 

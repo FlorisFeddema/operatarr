@@ -49,8 +49,10 @@ const (
 	mediaLibraryKind      = "MediaLibrary"
 	managedLibraryName    = "managed-library"
 	failedLibraryName     = "failed-init-library"
+	retainedLibraryName   = "retained-library"
 	kubectlAll            = "--all"
 	twoMinuteTimeoutFlag  = "--timeout=2m"
+	operatarrAPIVersion   = "feddema.dev/v1alpha1"
 )
 
 //go:embed manifests/local-path.yaml.tmpl
@@ -109,7 +111,9 @@ func mediaLibrarySpecs() {
 			Expect(waitForPVCBound(pvcName)).To(Succeed())
 
 			By("creating a MediaLibrary that references the PVC")
-			Expect(createTestObject(newTestLibrary(libraryName, pvcName))).To(Succeed())
+			library := newTestLibrary(libraryName, pvcName)
+			library.Spec.PVCRetentionPolicy = feddemav1alpha1.PVCRetentionPolicyRetain
+			Expect(createTestObject(library)).To(Succeed())
 			expectLibraryStatus(libraryName, metav1.ConditionTrue, "ExistingPVCFound", true, &pvcName)
 
 			By("checking no operator-managed PVC was created")
@@ -224,6 +228,62 @@ func mediaLibrarySpecs() {
 			var after corev1.PersistentVolumeClaim
 			Expect(getTestObject("pvc", managedLibraryName, &after)).To(Succeed())
 			Expect(after.Spec).To(Equal(before.Spec))
+		})
+
+		It("deletes managed PVCs by default and retains them when requested", func() {
+			const deleteLibraryName = "delete-policy-library"
+			deletePVCName := deleteLibraryName
+
+			By("creating a managed MediaLibrary with the default Delete policy")
+			Expect(createTestObject(newManagedTestLibrary(deleteLibraryName))).To(Succeed())
+			Expect(waitForPVCBound(deleteLibraryName)).To(Succeed())
+			deletingLibrary := expectLibraryStatus(
+				deleteLibraryName, metav1.ConditionTrue, "PVCInitialized", true, &deletePVCName,
+			)
+			Expect(deletingLibrary.Spec.PVCRetentionPolicy).To(Equal(feddemav1alpha1.PVCRetentionPolicyDelete))
+
+			By("cleaning the local-path test volume before deletion")
+			Expect(runMediaVolumePod(deleteLibraryName, deleteLibraryName+"-prepare-delete",
+				"rm -r /library/movies /library/tv /library/music", false)).To(Succeed())
+			_, err := utils.Run(utils.KindKubectl(kubectlDelete, podResource,
+				deleteLibraryName+"-prepare-delete", twoMinuteTimeoutFlag,
+				namespaceFlag, mediaNamespace))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("deleting the MediaLibrary and waiting for its PVC and initialization Job to be deleted")
+			_, err = utils.Run(utils.KindKubectl(kubectlDelete, "medialibrary", deleteLibraryName,
+				twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace))
+			Expect(err).NotTo(HaveOccurred())
+			for _, resource := range []string{"pvc/" + deleteLibraryName, "job/" + deleteLibraryName + "-pvc-init"} {
+				_, err = utils.Run(utils.KindKubectl("wait", "--for=delete", resource,
+					twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace))
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("creating a managed MediaLibrary with the Retain policy")
+			retainedLibrary := newManagedTestLibrary(retainedLibraryName)
+			retainedLibrary.Spec.PVCRetentionPolicy = feddemav1alpha1.PVCRetentionPolicyRetain
+			Expect(createTestObject(retainedLibrary)).To(Succeed())
+			Expect(waitForPVCBound(retainedLibraryName)).To(Succeed())
+			retainedPVCName := retainedLibraryName
+			expectLibraryStatus(
+				retainedLibraryName, metav1.ConditionTrue, "PVCInitialized", true, &retainedPVCName,
+			)
+
+			By("deleting the MediaLibrary while preserving its PVC and data")
+			_, err = utils.Run(utils.KindKubectl(kubectlDelete, "medialibrary", retainedLibraryName,
+				twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace))
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				var pvc corev1.PersistentVolumeClaim
+				g.Expect(getTestObject("pvc", retainedLibraryName, &pvc)).To(Succeed())
+				g.Expect(pvc.OwnerReferences).To(BeEmpty())
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+			_, err = utils.Run(utils.KindKubectl("wait", "--for=delete",
+				"job/"+retainedLibraryName+"-pvc-init", twoMinuteTimeoutFlag,
+				namespaceFlag, mediaNamespace))
+			Expect(err).NotTo(HaveOccurred())
+			checkMediaFolders(retainedLibraryName)
 		})
 
 		It("keeps initialized resources unchanged across reconciliations", func() {
@@ -422,7 +482,7 @@ func newTestPVC(name string, mode corev1.PersistentVolumeAccessMode) *corev1.Per
 
 func newTestLibrary(name, pvcName string) *feddemav1alpha1.MediaLibrary {
 	return &feddemav1alpha1.MediaLibrary{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "feddema.dev/v1alpha1", Kind: mediaLibraryKind},
+		TypeMeta:   metav1.TypeMeta{APIVersion: operatarrAPIVersion, Kind: mediaLibraryKind},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: mediaNamespace},
 		Spec:       feddemav1alpha1.MediaLibrarySpec{PVC: feddemav1alpha1.MediaLibraryPVC{PVCName: &pvcName}},
 	}
@@ -574,7 +634,7 @@ func cleanupMediaResources() error {
 		return fmt.Errorf("unable to remove MediaLibrary test pods: %w", err)
 	}
 	var protectedPods []string
-	for _, name := range []string{managedLibraryName, failedLibraryName} {
+	for _, name := range []string{managedLibraryName, failedLibraryName, retainedLibraryName} {
 		podName, err := protectTestVolume(name)
 		if err != nil {
 			return err
@@ -585,6 +645,8 @@ func cleanupMediaResources() error {
 	}
 
 	commands := [][]string{
+		{kubectlDelete, "sonarrs", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
+			namespaceFlag, mediaNamespace},
 		{kubectlDelete, "medialibraries", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
 			namespaceFlag, mediaNamespace},
 		{kubectlDelete, "jobs", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace},

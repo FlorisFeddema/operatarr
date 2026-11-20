@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -176,6 +178,60 @@ var _ = Describe("Sonarr dependency reconciliation", func() {
 		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 		Expect(condition.Reason).To(Equal("MediaLibraryUnavailable"))
 		Expect(condition.Message).To(ContainSubstring("not found"))
+	})
+
+	It("persists finalizer removal before deleting Sonarr", func() {
+		sonarr := newSonarr("sonarr-finalizer-removal", "missing-library", false)
+		Expect(k8sClient.Create(ctx, sonarr)).To(Succeed())
+
+		reconciler := &SonarrReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		request := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)}
+		_, err := reconciler.Reconcile(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &feddemadevv1alpha1.Sonarr{}
+		Expect(k8sClient.Get(ctx, request.NamespacedName, updated)).To(Succeed())
+		Expect(updated.Finalizers).To(ContainElement(finalizerName))
+		Expect(k8sClient.Delete(ctx, updated)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, request.NamespacedName, &feddemadevv1alpha1.Sonarr{}))
+		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(BeTrue())
+	})
+
+	It("preserves allocated Service fields without patching unchanged Services", func() {
+		sonarr := newSonarr("sonarr-service-idempotency", "unused-library", false)
+		Expect(k8sClient.Create(ctx, sonarr)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, sonarr)).To(Succeed()) })
+
+		r := &sonarrReconcile{
+			SonarrReconciler: SonarrReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()},
+			ctx:              ctx,
+			log:              logr.Discard(),
+			object:           *sonarr,
+		}
+		for _, step := range []struct {
+			name string
+			run  func() error
+		}{
+			{name: sonarr.Name, run: r.reconcileService},
+			{name: getHeadlessServiceName(sonarr.Name), run: r.reconcileHeadlessService},
+		} {
+			Expect(step.run()).To(Succeed())
+			before := &corev1.Service{}
+			key := client.ObjectKey{Name: step.name, Namespace: sonarr.Namespace}
+			Expect(k8sClient.Get(ctx, key, before)).To(Succeed())
+			Expect(before.Spec.ClusterIP).NotTo(BeEmpty())
+
+			Expect(step.run()).To(Succeed())
+			after := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, key, after)).To(Succeed())
+			Expect(after.ResourceVersion).To(Equal(before.ResourceVersion))
+			Expect(after.Spec.ClusterIPs).To(Equal(before.Spec.ClusterIPs))
+			Expect(after.Spec.ClusterIP).To(Equal(before.Spec.ClusterIP))
+		}
 	})
 
 	It("continues reconciling Sonarr resources when Gateway API is unavailable", func() {

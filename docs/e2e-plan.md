@@ -1,9 +1,10 @@
 # E2E test plan
 
 This document records the work to make the cluster end-to-end (e2e) suite in
-[test/e2e](../test/e2e/) reliable and the flows to add afterwards. The harness
-and Operator flows B1–B4 passed on a local Linux/arm64 kind cluster. Items
-marked **approval** fall under the approval boundaries in
+[test/e2e](../test/e2e/) reliable and the flows to add afterwards. The harness,
+Operator flows B1–B4, MediaLibrary flows B5–B9 and B11–B13, and Sonarr flows
+B14–B20 passed on a local Linux/arm64 kind cluster. Items marked **approval**
+fall under the approval boundaries in
 [AGENTS.md](../AGENTS.md) and need explicit sign-off before implementation.
 
 ## Current state
@@ -18,18 +19,27 @@ Operator flows and the MediaLibrary flows in
 2. B1 waits for the manager Deployment and pod to be healthy, checks that the
    manager does not restart for two minutes, and scans logs for RBAC errors.
 3. B2 checks HTTPS `/metrics` access from an in-cluster curl pod using a
-   ServiceAccount bound to the `metrics-reader` ClusterRole.
+   ServiceAccount bound to the `metrics-reader` ClusterRole. The pod runs
+   detached; the suite waits for it to succeed, reads its logs, and deletes it.
 4. B3 verifies the leader-election Lease holder matches the manager pod.
 5. B4 waits for both CRDs to report `Established=True`.
 6. On test failure, the suite prints manager pods, descriptions, logs, and
    namespace events. Teardown removes the test-only metrics grant and overlay.
 
-MediaLibrary flows B5–B9, B11, and B13 are implemented. `make test` and CI
-exclude this suite. B1–B7 passed on Kubernetes v1.37.0 in the local Linux/arm64
-kind cluster. The first B8 run exposed a managed-PVC reconciliation bug;
-after the fix, its PVC bound and its Job scheduled, but the rootless node
-rejected the NFS mount. The suite cleaned up its resources and left the
-cluster running. A single-node local-path RWX backend is now being validated.
+MediaLibrary flows B5–B9 and B11–B13 are implemented. `make test` and CI
+exclude this suite. All 12 specs (B1–B9 and B11–B13) passed on Kubernetes
+v1.37.0 in a local Linux/arm64 kind cluster with rootless Podman, using the
+single-node local-path RWX provisioner. The full 19-spec suite took about
+5 minutes 37 seconds, and teardown removed the CRDs, operator, and test
+storage. An earlier B8 run with NFS failed because the rootless node rejected
+the NFS mount; the local-path backend replaced it.
+
+Sonarr flows B14–B20 are implemented in
+[sonarr_test.go](../test/e2e/sonarr_test.go). They passed as part of the full
+19-spec run, including HTTPRoute deletion and recreation. The suite installs
+the pinned Gateway API HTTPRoute CRD and restarts the manager to test optional
+API detection and route creation, then removes the CRD. An earlier run exposed
+and fixed missing Gateway API scheme registration and Service drift detection.
 
 ## Part A: make the existing suite work
 
@@ -86,10 +96,11 @@ cluster running. A single-node local-path RWX backend is now being validated.
 11. **Helpers.** Add reusable helpers to [test/utils](../test/utils/), such as
     applying YAML, waiting for conditions, and reading JSONPath values, while
     preserving the current `Run` behavior.
-12. **CI (manual trigger selected).** Add an e2e job to
-    [go.yaml](../.github/workflows/go.yaml) that uses Docker and kind, sets
-    `CONTAINER_TOOL=docker`, runs only through `workflow_dispatch`, and uploads
-    diagnostics on failure.
+12. **CI (manual trigger selected, implemented).** A separate
+    [e2e.yaml](../.github/workflows/e2e.yaml) workflow uses Docker and kind,
+    sets `CONTAINER_TOOL=docker`, runs only through `workflow_dispatch`,
+    always deletes the cluster, and uploads the test output and kind logs on
+    failure.
 13. **Documentation.** Document prerequisites, environment variables, and the
     `make kind-create test-e2e kind-delete` workflow in the README.
 14. **Agent rule (after the harness and B1–B4 are implemented).** Add a rule to
@@ -122,9 +133,9 @@ provisioning worked, but NFS mounts failed with `Operation not permitted` on
 the rootless kind node. The approved test setup uses a separate local-path
 provisioner configured with a shared filesystem path, isolated StorageClass
 and RBAC. It supports concurrent access from pods on the single kind node,
-but does not test multi-node storage or enforce capacity limits. The existing
-[test/manifests/medialibrary.yaml](../test/manifests/medialibrary.yaml) uses a
-Ceph-specific StorageClass and should be replaced or removed.
+but does not test multi-node storage or enforce capacity limits. The former
+Ceph-specific `test/manifests/medialibrary.yaml` was unused and has been
+removed; [config/samples](../config/samples/) holds the example resources.
 
 | Flow | Assertions | Priority |
 |------|------------|----------|
@@ -135,24 +146,29 @@ Ceph-specific StorageClass and should be replaced or removed.
 | B9 Initialization Job failure | A failing Job leads to reason `PVCInitializationFailed` and not initialized | 1 |
 | B10 Resize | Increasing the size on an expandable StorageClass updates the PVC request | 2, needs an expandable ReadWriteMany class |
 | B11 StorageClass change rejected | Error or condition reported, PVC unchanged | 1 |
-| B12 Deletion | With `pvcRetentionPolicy: Delete`, deleting the MediaLibrary removes its managed PVC; with `Retain`, the PVC and data remain while the initialization Job is cleaned up. A PVC supplied by `spec.pvc.pvcName` is never deleted. | 1, requires the approved API field and cleanup behavior |
+| B12 Deletion | With `pvcRetentionPolicy: Delete`, deleting the MediaLibrary removes its managed PVC; with `Retain`, the PVC and data remain while the initialization Job is cleaned up. A PVC supplied by `spec.pvc.pvcName` is never deleted. | 1, implemented |
 | B13 Idempotency | Resource versions of the MediaLibrary, PVC, and Job stay stable across resyncs | 1 |
 
 ### Sonarr
 
 Current limitations: the StatefulSet mounts the placeholder claim
 [`mediaPvcName`](../internal/controller/sonarr_controller.go#L388), so the
-Sonarr pod stays `Pending`. When `crossNamespaceAccess` is `false`,
+Sonarr pod stays `Pending`. B14–B20 test controller resources without asserting
+pod readiness and use `crossNamespaceAccess: true`. When
+`crossNamespaceAccess` is `false`,
 [`reconcileMediaPersistentVolume`](../internal/controller/sonarr_controller.go#L542)
-creates a PV without a volume source, which a real API server rejects.
+creates a PV without a volume source, which a real API server rejects; that
+path remains deferred to B22. Disabling routing deletes the Sonarr-owned
+HTTPRoute, even if its MediaLibrary is unavailable; a route disabled from
+creation is not created.
 
 | Flow | Assertions | Priority |
 |------|------------|----------|
 | B14 Missing MediaLibrary | `Available=False` with reason `MediaLibraryUnavailable`; recovers after the MediaLibrary is created | 1 |
 | B15 Resources created without Gateway API | With `crossNamespaceAccess: true`, the StatefulSet, Service, config PVC template, and owner references exist; no HTTPRoute; `Available=True` | 1 |
-| B16 Gateway API installed | After installing the Gateway API CRDs and restarting the manager, an HTTPRoute is created with the configured hostname and parentRef; disabling the route removes or skips it | 1 |
+| B16 Gateway API installed | After installing the pinned HTTPRoute CRD and restarting the manager, an HTTPRoute is created with the configured hostname and parentRef; disabling deletes it, and re-enabling recreates it | 1 |
 | B17 HTTPRoute validation | An enabled route without a hostname is rejected by the API server | 1 |
-| B18 Spec updates | Changing the image or environment updates the StatefulSet | 1 |
+| B18 Spec updates | Changing the image or resource requests updates the StatefulSet | 1 |
 | B19 Drift correction | A manually edited or deleted Service is restored | 1 |
 | B20 Deletion | Owned resources are garbage-collected and the finalizer is removed | 1 |
 | B21 Pod ready and reachable | Pod runs with the media volume mounted and returns HTTP 200 through the Service | 2 |
@@ -171,13 +187,17 @@ creates a PV without a volume source, which a real API server rejects.
 1. Harness fixes A2, A3, and A5–A11, including the approved minimal RBAC A1;
    then B1–B4. **Implemented and passed on Linux/arm64 kind.** The AGENTS.md
    e2e rule (step 14) is also in place.
-2. Single-node RWX provisioner; then B5–B9 and B11–B13. A4 and managed-PVC
-   reconciliation fixes are implemented; live initialization needs validation.
-3. Sonarr flows B14–B20.
-4. Implement the approved `pvcRetentionPolicy` API and behavior, then verify
-   both deletion choices in B12.
+2. Single-node RWX provisioner; then B5–B9 and B11–B13. **Implemented and
+   passed on Linux/arm64 kind**, including the A4 and managed-PVC
+   reconciliation fixes.
+3. Sonarr flows B14–B20. **Implemented and passed on Linux/arm64 kind.**
+4. `pvcRetentionPolicy` supports `Delete` (the default) and `Retain` for
+   operator-managed PVCs; referenced user PVCs are untouched. **Implemented
+   and passed on Linux/arm64 kind**; B12 verifies deletion, retention, retained
+   data, and initialization Job cleanup.
 5. Add the manually triggered CI job (step 12) once the suite is stable and
-   runs in roughly ten minutes.
+   runs in roughly ten minutes. **Implemented** as a separate
+   [e2e.yaml](../.github/workflows/e2e.yaml) workflow; not yet run in CI.
 6. Priority 2 flows after the storage design is approved.
 
 ## Decisions recorded
@@ -191,11 +211,11 @@ creates a PV without a volume source, which a real API server rejects.
   a multi-node storage test.
 - **MediaLibrary PVC retention:** support both deletion behaviors with the
   proposed schema `spec.pvcRetentionPolicy`, enum values `Delete` and `Retain`,
-  default `Delete`. This would preserve existing behavior for resources that
-  omit the field. The setting would apply to operator-managed PVCs; referenced
-  existing PVCs would remain user-owned and untouched. `Retain` would require
-  removing the MediaLibrary owner reference before the finalizer completes.
-  Obtain explicit approval for the schema and cleanup behavior before editing.
+  default `Delete`. This preserves existing behavior for resources that omit
+  the field. The setting applies to operator-managed PVCs; referenced existing
+  PVCs remain user-owned and untouched. `Retain` removes the MediaLibrary owner
+  reference before the finalizer completes. Schema and cleanup behavior
+  approved and implemented.
 - **Cluster:** use a local kind cluster. This is a target choice, not approval
   to mutate a cluster; obtain explicit confirmation before creating it. A
   working container engine and kind setup are also still prerequisites.

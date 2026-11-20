@@ -27,6 +27,12 @@ type MediaLibrarySpec struct {
 	// +kubebuilder:default:=true
 	CrossNamespaceAccess bool `json:"crossNamespaceAccess,omitempty"`
 
+	// PVCRetentionPolicy defines whether the operator-managed PVC is deleted or retained
+	// when the MediaLibrary is deleted.
+	// +kubebuilder:validation:Enum=Delete;Retain
+	// +kubebuilder:default:=Delete
+	PVCRetentionPolicy PVCRetentionPolicy `json:"pvcRetentionPolicy,omitempty"`
+
 	// PVC defines the PersistentVolumeClaim to use for the MediaLibrary.
 	// +kubebuilder:validation:Required
 	PVC MediaLibraryPVC `json:"pvc"`
@@ -35,6 +41,16 @@ type MediaLibrarySpec struct {
 	// +kubebuilder:validation:Optional
 	Permissions *MediaPermissions `json:"permissions,omitempty"`
 }
+
+// PVCRetentionPolicy defines what happens to an operator-managed PVC when its MediaLibrary is deleted.
+type PVCRetentionPolicy string
+
+const (
+	// PVCRetentionPolicyDelete deletes the operator-managed PVC with the MediaLibrary.
+	PVCRetentionPolicyDelete PVCRetentionPolicy = "Delete"
+	// PVCRetentionPolicyRetain preserves the operator-managed PVC after deleting the MediaLibrary.
+	PVCRetentionPolicyRetain PVCRetentionPolicy = "Retain"
+)
 
 // MediaLibraryPVC defines the PersistentVolumeClaim to use for the MediaLibrary.
 type MediaLibraryPVC struct {

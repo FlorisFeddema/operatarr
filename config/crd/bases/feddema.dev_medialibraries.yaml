@@ -112,6 +112,15 @@ spec:
                     - message: Value is immutable
                       rule: self == oldSelf
                 type: object
+              pvcRetentionPolicy:
+                default: Delete
+                description: |-
+                  PVCRetentionPolicy defines whether the operator-managed PVC is deleted or retained
+                  when the MediaLibrary is deleted.
+                enum:
+                - Delete
+                - Retain
+                type: string
             required:
             - pvc
             type: object

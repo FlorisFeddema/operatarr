@@ -70,6 +70,7 @@ rules:
   - httproutes
   verbs:
   - create
+  - delete
   - get
   - list
   - patch

@@ -259,6 +259,99 @@ var _ = Describe("MediaLibrary finalization", func() {
 		_, err = reconciler.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("removes only the MediaLibrary owner reference when retaining a managed PVC", func() {
+		ctx := context.Background()
+		ml := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: "finalization-retained-library", Namespace: defaultNamespace},
+			Spec: feddemadevv1alpha1.MediaLibrarySpec{
+				PVCRetentionPolicy: feddemadevv1alpha1.PVCRetentionPolicyRetain,
+				PVC:                feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")},
+			},
+		}
+		reconciler := &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ml), ml)).To(Succeed())
+
+		otherOwner := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: "unrelated", UID: "unrelated"}
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: ml.Name, Namespace: ml.Namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: feddemadevv1alpha1.GroupVersion.String(),
+						Kind:       "MediaLibrary",
+						Name:       ml.Name,
+						UID:        ml.UID,
+						Controller: new(true),
+					},
+					otherOwner,
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pvc))).To(Succeed()) })
+
+		Expect(k8sClient.Delete(ctx, ml)).To(Succeed())
+		req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(ml)}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		updatedPVC := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pvc), updatedPVC)).To(Succeed())
+		Expect(updatedPVC.OwnerReferences).To(ConsistOf(otherOwner))
+	})
+
+	It("keeps the managed PVC owner reference for the default Delete policy", func() {
+		ctx := context.Background()
+		ml := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: "finalization-default-library", Namespace: defaultNamespace},
+			Spec: feddemadevv1alpha1.MediaLibrarySpec{
+				PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")},
+			},
+		}
+		reconciler := &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ml), ml)).To(Succeed())
+		Expect(ml.Spec.PVCRetentionPolicy).To(Equal(feddemadevv1alpha1.PVCRetentionPolicyDelete))
+
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: ml.Name, Namespace: ml.Namespace,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: feddemadevv1alpha1.GroupVersion.String(),
+					Kind:       "MediaLibrary",
+					Name:       ml.Name,
+					UID:        ml.UID,
+					Controller: new(true),
+				}},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pvc))).To(Succeed()) })
+
+		Expect(k8sClient.Delete(ctx, ml)).To(Succeed())
+		req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(ml)}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		updatedPVC := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pvc), updatedPVC)).To(Succeed())
+		Expect(updatedPVC.OwnerReferences).To(HaveLen(1))
+		Expect(updatedPVC.OwnerReferences[0].UID).To(Equal(ml.UID))
+	})
 })
 
 var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
