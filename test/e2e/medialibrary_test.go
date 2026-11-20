@@ -49,11 +49,17 @@ const (
 	mediaLibraryKind      = "MediaLibrary"
 	managedLibraryName    = "managed-library"
 	failedLibraryName     = "failed-init-library"
+	resizeLibraryName     = "resize-library"
 	retainedLibraryName   = "retained-library"
 	kubectlAll            = "--all"
 	twoMinuteTimeoutFlag  = "--timeout=2m"
 	operatarrAPIVersion   = "feddema.dev/v1alpha1"
 )
+
+func quantityPointer(value string) *resource.Quantity {
+	quantity := resource.MustParse(value)
+	return &quantity
+}
 
 //go:embed manifests/local-path.yaml.tmpl
 var localPathTemplate string
@@ -210,6 +216,30 @@ func mediaLibrarySpecs() {
 				namespaceFlag, mediaNamespace))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("is not a directory"))
+		})
+
+		It("increases a managed PVC request when the requested size grows", func() {
+			const libraryName = resizeLibraryName
+			pvcName := libraryName
+
+			By("creating a managed MediaLibrary with an expandable StorageClass")
+			Expect(createTestObject(newManagedTestLibrary(libraryName))).To(Succeed())
+			Expect(waitForPVCBound(pvcName)).To(Succeed())
+			expectLibraryStatus(libraryName, metav1.ConditionTrue, "PVCInitialized", true, &pvcName)
+
+			By("increasing the requested MediaLibrary storage size")
+			_, err := utils.Run(utils.KindKubectl("patch", "medialibrary", libraryName, "--type=merge",
+				"-p", `{"spec":{"pvc":{"size":"256Mi"}}}`, namespaceFlag, mediaNamespace))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the managed PVC request was expanded")
+			expectedSize := resource.MustParse("256Mi")
+			Eventually(func(g Gomega) {
+				var pvc corev1.PersistentVolumeClaim
+				g.Expect(getTestObject("pvc", pvcName, &pvc)).To(Succeed())
+				requestedSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+				g.Expect(requestedSize.Cmp(expectedSize)).To(BeZero())
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
 		})
 
 		It("rejects changes to an existing storage class", func() {
@@ -494,7 +524,7 @@ func newManagedTestLibrary(name string) *feddemav1alpha1.MediaLibrary {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: mediaNamespace},
 		Spec: feddemav1alpha1.MediaLibrarySpec{
 			PVC: feddemav1alpha1.MediaLibraryPVC{
-				Size:             resource.MustParse("128Mi"),
+				Size:             quantityPointer("128Mi"),
 				StorageClassName: &mediaNamespace,
 			},
 		},
@@ -634,7 +664,7 @@ func cleanupMediaResources() error {
 		return fmt.Errorf("unable to remove MediaLibrary test pods: %w", err)
 	}
 	var protectedPods []string
-	for _, name := range []string{managedLibraryName, failedLibraryName, retainedLibraryName} {
+	for _, name := range []string{managedLibraryName, failedLibraryName, resizeLibraryName, retainedLibraryName} {
 		podName, err := protectTestVolume(name)
 		if err != nil {
 			return err

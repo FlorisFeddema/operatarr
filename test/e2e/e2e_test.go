@@ -43,6 +43,7 @@ const (
 	leaderElectionName = "f9ce3012.feddema.dev"
 	managerImage       = "example.com/operatarr:e2e"
 	jobRunnerImage     = "example.com/operatarr-jobrunner:e2e"
+	sonarrMockImage    = "example.com/sonarr:e2e"
 	stabilityWindow    = 2 * time.Minute
 )
 
@@ -281,7 +282,7 @@ func prepareImages() (result error) {
 		return fmt.Errorf("unable to build e2e images: %w", err)
 	}
 
-	for _, archive := range []string{"manager.tar", "jobrunner.tar"} {
+	for _, archive := range []string{"manager.tar", "jobrunner.tar", "sonarr.tar"} {
 		if err := utils.LoadImageArchiveToKindCluster(filepath.Join(imageDir, archive)); err != nil {
 			return fmt.Errorf("unable to load %s into kind: %w", archive, err)
 		}

@@ -47,6 +47,8 @@ const SonarrPort int32 = 8989
 
 const sonarrHTTPPortName = "http"
 
+var errCrossNamespaceMediaLibraryUnsupported = errors.New("cross-namespace MediaLibrary references are not supported")
+
 // SonarrReconciler reconciles a Sonarr object
 type SonarrReconciler struct {
 	client.Client
@@ -63,13 +65,14 @@ type sonarrReconcile struct {
 	log          logr.Logger
 	object       feddemadevv1alpha1.Sonarr
 	mediaLibrary *feddemadevv1alpha1.MediaLibrary
+	mediaPVC     *corev1.PersistentVolumeClaim
 }
 
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=feddema.dev,resources=sonarrs/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services,verbs=get;list;watch;create;patch
-// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch;delete
 
@@ -80,16 +83,11 @@ func (r *SonarrReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&feddemadevv1alpha1.Sonarr{}).
 		Watches(&feddemadevv1alpha1.MediaLibrary{}, handler.EnqueueRequestsFromMapFunc(r.mapMediaLibraryToSonarrs)).
+		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapMediaLibraryPVCToSonarrs)).
 		Owns(&appsv1.StatefulSet{},
 			builder.WithPredicates(genChangedPredicate),
 		).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.PersistentVolumeClaim{},
-			builder.WithPredicates(genChangedPredicate),
-		).
-		Owns(&corev1.PersistentVolume{},
-			builder.WithPredicates(genChangedPredicate),
-		)
+		Owns(&corev1.Service{})
 
 	if r.GatewayAPIAvailable {
 		b = b.Owns(&gatewayv1.HTTPRoute{}, builder.WithPredicates(genChangedPredicate))
@@ -124,6 +122,54 @@ func (r *SonarrReconciler) mapMediaLibraryToSonarrs(ctx context.Context, object 
 		}
 
 		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)})
+	}
+	return requests
+}
+
+func (r *SonarrReconciler) mapMediaLibraryPVCToSonarrs(ctx context.Context, object client.Object) []reconcile.Request {
+	pvc, ok := object.(*corev1.PersistentVolumeClaim)
+	if !ok {
+		return nil
+	}
+
+	mediaLibraries := &feddemadevv1alpha1.MediaLibraryList{}
+	if err := r.List(ctx, mediaLibraries, client.InNamespace(pvc.Namespace)); err != nil {
+		lg.FromContext(ctx).Error(err, "unable to list MediaLibrary resources for PVC watch",
+			"pvc", client.ObjectKeyFromObject(pvc))
+		return nil
+	}
+	libraryNames := make(map[string]struct{})
+	for i := range mediaLibraries.Items {
+		library := &mediaLibraries.Items[i]
+		if library.Status.EffectivePVC != nil && *library.Status.EffectivePVC == pvc.Name {
+			libraryNames[library.Name] = struct{}{}
+		}
+	}
+	if len(libraryNames) == 0 {
+		return nil
+	}
+
+	sonarrs := &feddemadevv1alpha1.SonarrList{}
+	if err := r.List(ctx, sonarrs, client.InNamespace(pvc.Namespace)); err != nil {
+		lg.FromContext(ctx).Error(err, "unable to list Sonarr resources for PVC watch",
+			"pvc", client.ObjectKeyFromObject(pvc))
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(sonarrs.Items))
+	for i := range sonarrs.Items {
+		sonarr := &sonarrs.Items[i]
+		ref := sonarr.Spec.MediaLibraryRef
+		refNamespace := ref.Namespace
+		if refNamespace == "" {
+			refNamespace = sonarr.Namespace
+		}
+		if ref.Kind != mediaLibraryKind || refNamespace != pvc.Namespace {
+			continue
+		}
+		if _, ok := libraryNames[ref.Name]; ok {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sonarr)})
+		}
 	}
 	return requests
 }
@@ -164,6 +210,9 @@ func (r *sonarrReconcile) reconcile() error {
 	}
 
 	if err := r.loadMediaLibrary(); err != nil {
+		if errors.Is(err, errCrossNamespaceMediaLibraryUnsupported) {
+			return r.setAvailableCondition(metav1.ConditionFalse, "CrossNamespaceMediaLibraryUnsupported", err.Error())
+		}
 		return errors.Join(err, r.setAvailableCondition(metav1.ConditionFalse, "MediaLibraryUnavailable", err.Error()))
 	}
 
@@ -180,7 +229,6 @@ func (r *sonarrReconcile) reconcile() error {
 		steps = append(steps, reconcileStep{name: "HTTPRoute", run: r.reconcileHttpRoute})
 	}
 	steps = append(steps,
-		reconcileStep{name: "media PersistentVolume", run: r.reconcileMediaPersistentVolume},
 		reconcileStep{name: "StatefulSet", run: r.reconcileStatefulSet},
 	)
 	for _, step := range steps {
@@ -209,6 +257,12 @@ func (r *sonarrReconcile) loadMediaLibrary() error {
 	if ref.Namespace == "" {
 		ref.Namespace = r.object.Namespace
 	}
+	if ref.Namespace != r.object.Namespace {
+		return fmt.Errorf("%w: Sonarr %s cannot use MediaLibrary %s",
+			errCrossNamespaceMediaLibraryUnsupported,
+			client.ObjectKeyFromObject(&r.object),
+			client.ObjectKey{Name: ref.Name, Namespace: ref.Namespace})
+	}
 	mediaLibrary, err := getMediaLibraryFromRef(r.ctx, r.Client, ref)
 	if err != nil {
 		return fmt.Errorf("unable to get MediaLibrary from reference: %w", err)
@@ -218,6 +272,12 @@ func (r *sonarrReconcile) loadMediaLibrary() error {
 	if !mediaLibrary.Status.Initialized {
 		return errors.New("referenced MediaLibrary is not initialized")
 	}
+
+	mediaPVC, err := getMediaLibraryPVC(r.Client, r.ctx, *mediaLibrary)
+	if err != nil {
+		return fmt.Errorf("unable to get PVC for referenced MediaLibrary: %w", err)
+	}
+	r.mediaPVC = mediaPVC
 
 	return nil
 }
@@ -283,6 +343,10 @@ func (r *sonarrReconcile) preconcile() (bool, error) {
 }
 
 func (r *sonarrReconcile) reconcileStatefulSet() error {
+	if r.mediaPVC == nil {
+		return errors.New("referenced MediaLibrary PVC was not loaded")
+	}
+
 	r.log.V(1).Info("Creating or patching StatefulSet")
 	ss := &appsv1.StatefulSet{}
 	ss.Name = r.object.Name
@@ -397,18 +461,16 @@ func (r *sonarrReconcile) reconcileStatefulSet() error {
 							},
 						},
 					},
-					// TODO: Add media volume.
 					Volumes: []corev1.Volume{
 						{
 							Name: "media",
 							VolumeSource: corev1.VolumeSource{
 								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: "mediaPvcName",
+									ClaimName: r.mediaPVC.Name,
 								},
 							},
 						},
 					},
-					// TODO: Add media volume.
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
@@ -575,43 +637,5 @@ func (r *sonarrReconcile) reconcileHttpRoute() error {
 	}
 
 	logResourceOperation(r.log, "HTTPRoute", route, opResult)
-	return nil
-}
-
-func (r *sonarrReconcile) reconcileMediaPersistentVolume() error {
-	if r.mediaLibrary.Spec.CrossNamespaceAccess {
-		r.log.V(1).Info("MediaLibrary uses cross-namespace access, skipping PersistentVolume creation")
-		return nil
-	}
-
-	r.log.V(1).Info("Creating or patching media PersistentVolume")
-	pv := &corev1.PersistentVolume{}
-	pv.Name = getLibraryVolumeName(r.object.Name)
-	pv.Namespace = r.object.Namespace
-	labels := labelsForResource(r.object.Name)
-
-	mediaPvc, err := getMediaLibraryPVC(r.Client, r.ctx, *r.mediaLibrary)
-	if err != nil {
-		return fmt.Errorf("unable to get MediaLibrary PVC for PersistentVolume creation: %w", err)
-	}
-
-	opResult, err := controllerutil.CreateOrPatch(r.ctx, r.Client, pv, func() error {
-		if err := ctrl.SetControllerReference(&r.object, pv, r.Scheme); err != nil {
-			return fmt.Errorf("unable to set controller owner reference for media PersistentVolume: %w", err)
-		}
-
-		pv.SetLabels(mergeMap(pv.GetLabels(), labels))
-		pv.Spec = corev1.PersistentVolumeSpec{
-			AccessModes:      mediaPvc.Spec.AccessModes,
-			Capacity:         mediaPvc.Spec.Resources.Requests,
-			StorageClassName: *mediaPvc.Spec.StorageClassName,
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("unable to create or patch media PersistentVolume %s: %w", client.ObjectKeyFromObject(pv), err)
-	}
-
-	logResourceOperation(r.log, "PersistentVolume", pv, opResult)
 	return nil
 }

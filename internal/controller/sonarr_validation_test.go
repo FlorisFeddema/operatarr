@@ -131,6 +131,51 @@ var _ = Describe("Sonarr MediaLibrary watch mapping", func() {
 			NamespacedName: client.ObjectKeyFromObject(referencedSonarr),
 		}))
 	})
+
+	It("enqueues Sonarr resources when their effective PVC changes", func() {
+		ctx := context.Background()
+		pvcName := "watched-library-pvc"
+		mediaLibrary := &feddemadevv1alpha1.MediaLibrary{
+			ObjectMeta: metav1.ObjectMeta{Name: "watched-pvc-library", Namespace: defaultNamespace},
+			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi")}},
+			Status:     feddemadevv1alpha1.MediaLibraryStatus{EffectivePVC: &pvcName},
+		}
+		Expect(k8sClient.Create(ctx, mediaLibrary)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(mediaLibrary), mediaLibrary)).To(Succeed())
+		mediaLibrary.Status = feddemadevv1alpha1.MediaLibraryStatus{EffectivePVC: &pvcName}
+		Expect(k8sClient.Status().Update(ctx, mediaLibrary)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, mediaLibrary)).To(Succeed())
+		})
+
+		sonarr := &feddemadevv1alpha1.Sonarr{
+			ObjectMeta: metav1.ObjectMeta{Name: "sonarr-references-watched-pvc", Namespace: defaultNamespace},
+			Spec: feddemadevv1alpha1.SonarrSpec{
+				PodSpec: feddemadevv1alpha1.SonarrPodTemplateSpec{
+					Image: testSonarrImage,
+					ConfigVolumeSpec: &feddemadevv1alpha1.ConfigVolumeSpec{
+						Size: resource.MustParse("1Gi"),
+					},
+				},
+				HttpRouteSpec: feddemadevv1alpha1.SonarrHttpRouteSpec{
+					ParentRef: gatewayv1.ParentReference{Name: testGatewayName},
+				},
+				MediaLibraryRef: corev1.ObjectReference{Kind: mediaLibraryKind, Name: mediaLibrary.Name},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sonarr)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, sonarr)).To(Succeed())
+		})
+
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: defaultNamespace},
+		}
+		requests := (&SonarrReconciler{Client: k8sClient}).mapMediaLibraryPVCToSonarrs(ctx, pvc)
+		Expect(requests).To(ConsistOf(reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(sonarr),
+		}))
+	})
 })
 
 var _ = Describe("Sonarr dependency reconciliation", func() {
@@ -177,6 +222,7 @@ var _ = Describe("Sonarr dependency reconciliation", func() {
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 		Expect(condition.Reason).To(Equal("MediaLibraryUnavailable"))
+		Expect(condition.ObservedGeneration).To(Equal(updated.Generation))
 		Expect(condition.Message).To(ContainSubstring("not found"))
 	})
 
@@ -237,10 +283,23 @@ var _ = Describe("Sonarr dependency reconciliation", func() {
 	It("continues reconciling Sonarr resources when Gateway API is unavailable", func() {
 		const libraryName = "sonarr-gateway-library"
 		pvcName := "sonarr-gateway-pvc"
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: defaultNamespace},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, pvc)).To(Succeed())
+		})
 		library := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: libraryName, Namespace: defaultNamespace},
 			Spec: feddemadevv1alpha1.MediaLibrarySpec{
-				CrossNamespaceAccess: true,
+				CrossNamespaceAccess: false,
 				PVC:                  feddemadevv1alpha1.MediaLibraryPVC{PVCName: &pvcName},
 			},
 			Status: feddemadevv1alpha1.MediaLibraryStatus{
@@ -278,12 +337,21 @@ var _ = Describe("Sonarr dependency reconciliation", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), service)).To(Succeed())
 		statefulSet := &appsv1.StatefulSet{}
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), statefulSet)).To(Succeed())
+		Expect(statefulSet.Spec.Template.Spec.Volumes).To(ContainElement(corev1.Volume{
+			Name: "media",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName},
+			},
+		}))
+		pvErr := k8sClient.Get(ctx, client.ObjectKey{Name: sonarr.Name + "-media"}, &corev1.PersistentVolume{})
+		Expect(apierrors.IsNotFound(pvErr)).To(BeTrue())
 
 		updated := &feddemadevv1alpha1.Sonarr{}
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sonarr), updated)).To(Succeed())
 		condition := getAvailableCondition(updated.Status.Conditions)
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		Expect(condition.ObservedGeneration).To(Equal(updated.Generation))
 		resourceVersion := updated.ResourceVersion
 
 		_, err = reconciler.Reconcile(ctx, request)

@@ -8,7 +8,6 @@ rules:
   - ""
   resources:
   - persistentvolumeclaims
-  - persistentvolumes
   - services
   verbs:
   - create

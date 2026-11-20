@@ -9,10 +9,10 @@ import (
 	feddemadevv1alpha1 "github.com/FlorisFeddema/operatarr/api/v1alpha1"
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/funcr"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -36,7 +36,7 @@ func errorTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
-		feddemadevv1alpha1.AddToScheme, corev1.AddToScheme, batchv1.AddToScheme, gatewayv1.Install,
+		feddemadevv1alpha1.AddToScheme, appsv1.AddToScheme, corev1.AddToScheme, batchv1.AddToScheme, gatewayv1.Install,
 	} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
@@ -297,6 +297,7 @@ func TestSonarrHTTPRouteSkippedWithoutGatewayAPI(t *testing.T) {
 
 func TestSonarrStepAndStatusErrors(t *testing.T) {
 	scheme := errorTestScheme(t)
+	pvcName := "test-library-pvc"
 	sonarr := &feddemadevv1alpha1.Sonarr{
 		ObjectMeta: metav1.ObjectMeta{Name: testSonarrName, Namespace: defaultNamespace, Finalizers: []string{finalizerName}},
 		Spec: feddemadevv1alpha1.SonarrSpec{
@@ -305,11 +306,12 @@ func TestSonarrStepAndStatusErrors(t *testing.T) {
 	}
 	library := &feddemadevv1alpha1.MediaLibrary{
 		ObjectMeta: metav1.ObjectMeta{Name: testLibraryName, Namespace: defaultNamespace},
-		Status:     feddemadevv1alpha1.MediaLibraryStatus{Initialized: true},
+		Status:     feddemadevv1alpha1.MediaLibraryStatus{EffectivePVC: &pvcName, Initialized: true},
 	}
+	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: defaultNamespace}}
 	stepErr := errors.New("service create rejected")
 	statusErr := errors.New("status update rejected")
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sonarr, library).
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sonarr, library, pvc).
 		WithStatusSubresource(sonarr, library).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
 			return stepErr
@@ -330,6 +332,48 @@ func TestSonarrStepAndStatusErrors(t *testing.T) {
 	}
 }
 
+func TestSonarrCrossNamespaceMediaLibraryIsUnsupported(t *testing.T) {
+	scheme := errorTestScheme(t)
+	sonarr := &feddemadevv1alpha1.Sonarr{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testSonarrName, Namespace: defaultNamespace, Finalizers: []string{finalizerName},
+		},
+		Spec: feddemadevv1alpha1.SonarrSpec{
+			MediaLibraryRef: corev1.ObjectReference{
+				Kind: mediaLibraryKind, Name: testLibraryName, Namespace: "other",
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sonarr).
+		WithStatusSubresource(sonarr).Build()
+	reconciler := &SonarrReconciler{Client: c, Scheme: scheme}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(sonarr),
+	})
+	if err != nil {
+		t.Fatalf("cross-namespace reference should be reported without retrying: %v", err)
+	}
+
+	current := &feddemadevv1alpha1.Sonarr{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(sonarr), current); err != nil {
+		t.Fatal(err)
+	}
+	condition := getAvailableCondition(current.Status.Conditions)
+	if condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != "CrossNamespaceMediaLibraryUnsupported" {
+		t.Fatalf("expected explicit unsupported condition, got %#v", condition)
+	}
+	for _, object := range []client.Object{
+		&appsv1.StatefulSet{},
+		&corev1.Service{},
+	} {
+		if err := c.Get(context.Background(), client.ObjectKeyFromObject(sonarr), object); !apierrors.IsNotFound(err) {
+			t.Fatalf("cross-namespace reference must not create Sonarr resources, got %v", err)
+		}
+	}
+}
+
 func TestWatchMappingLogsUnreturnableErrors(t *testing.T) {
 	scheme := errorTestScheme(t)
 	listErr := errors.New("list rejected")
@@ -346,6 +390,26 @@ func TestWatchMappingLogsUnreturnableErrors(t *testing.T) {
 	if len(requests) != 0 || len(logs) != 1 || !strings.Contains(logs[0], "list rejected") ||
 		!strings.Contains(logs[0], `"mediaLibrary"`) {
 		t.Fatalf("expected a single contextual watch error log, got %v, %v", requests, logs)
+	}
+}
+
+func TestPVCWatchMappingLogsUnreturnableErrors(t *testing.T) {
+	scheme := errorTestScheme(t)
+	listErr := errors.New("list rejected")
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return listErr
+		},
+	}).Build()
+	var logs []string
+	log := funcr.NewJSON(func(output string) { logs = append(logs, output) }, funcr.Options{})
+	ctx := lg.IntoContext(context.Background(), log)
+	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "watch-mapping-pvc", Namespace: defaultNamespace}}
+
+	requests := (&SonarrReconciler{Client: c}).mapMediaLibraryPVCToSonarrs(ctx, pvc)
+	if len(requests) != 0 || len(logs) != 1 || !strings.Contains(logs[0], "list rejected") ||
+		!strings.Contains(logs[0], `"pvc"`) {
+		t.Fatalf("expected a single contextual PVC watch error log, got %v, %v", requests, logs)
 	}
 }
 
@@ -484,7 +548,7 @@ func TestManagedPVCInitializationAndIdempotency(t *testing.T) {
 	scheme := errorTestScheme(t)
 	library := &feddemadevv1alpha1.MediaLibrary{
 		ObjectMeta: metav1.ObjectMeta{Name: testLibraryName, Namespace: defaultNamespace, Finalizers: []string{finalizerName}},
-		Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")}},
+		Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi")}},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(library).WithStatusSubresource(library).Build()
 	reconciler := &MediaLibraryReconciler{Client: c, Scheme: scheme, JobRunnerImage: testJobRunnerImage}
@@ -534,7 +598,7 @@ func TestManagedPVCStatusFailureCanRetry(t *testing.T) {
 	scheme := errorTestScheme(t)
 	library := &feddemadevv1alpha1.MediaLibrary{
 		ObjectMeta: metav1.ObjectMeta{Name: testLibraryName, Namespace: defaultNamespace, Finalizers: []string{finalizerName}},
-		Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")}},
+		Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi")}},
 	}
 	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(library).WithStatusSubresource(library).Build()
 	statusErr := apierrors.NewConflict(schema.GroupResource{Group: "feddema.dev", Resource: "medialibraries"}, testLibraryName,

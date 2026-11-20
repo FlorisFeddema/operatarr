@@ -16,13 +16,13 @@ spec:
   versions:
   - additionalPrinterColumns:
     - description: The name of the PersistentVolumeClaim
-      jsonPath: .status.actualPVCName
+      jsonPath: .status.effectivePVC
       name: PVC
       type: string
-    - description: The size of the MediaLibrary
-      jsonPath: .status.resources.requests.storage
+    - description: The requested size of the managed PVC
+      jsonPath: .spec.pvc.size
       name: Size
-      type: date
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -112,6 +112,13 @@ spec:
                     - message: Value is immutable
                       rule: self == oldSelf
                 type: object
+                x-kubernetes-validations:
+                - message: Either pvcName or size must be set
+                  rule: has(self.pvcName) || has(self.size)
+                - message: Only pvcName or size/storageClassName/annotations can be
+                    set, not both
+                  rule: '!has(self.pvcName) || (!has(self.storageClassName) && !has(self.annotations)
+                    && (!has(self.size) || self.size == ''0''))'
               pvcRetentionPolicy:
                 default: Delete
                 description: |-

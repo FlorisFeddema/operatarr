@@ -91,10 +91,6 @@ func effectiveMediaPermissions(permissions *feddemadevv1alpha1.MediaPermissions)
 	return effective
 }
 
-func getLibraryVolumeName(name string) string {
-	return fmt.Sprintf("%s-media", name)
-}
-
 func getHeadlessServiceName(name string) string {
 	return fmt.Sprintf("%s-headless", name)
 }

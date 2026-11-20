@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -43,6 +44,11 @@ const (
 	testJobRunnerImage = "test:latest"
 )
 
+func quantityPointer(value string) *resource.Quantity {
+	quantity := resource.MustParse(value)
+	return &quantity
+}
+
 var _ = Describe("MediaLibrary Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
@@ -66,7 +72,7 @@ var _ = Describe("MediaLibrary Controller", func() {
 					},
 					Spec: feddemadevv1alpha1.MediaLibrarySpec{
 						PVC: feddemadevv1alpha1.MediaLibraryPVC{
-							Size: resource.MustParse("1Gi"),
+							Size: quantityPointer("1Gi"),
 						},
 					},
 				}
@@ -136,7 +142,7 @@ var _ = Describe("MediaLibrary initialization Job status", func() {
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
 			Spec: feddemadevv1alpha1.MediaLibrarySpec{
-				PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")},
+				PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi")},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ml)).To(Succeed())
@@ -184,6 +190,7 @@ var _ = Describe("MediaLibrary initialization Job status", func() {
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(conditionStatus))
 		Expect(condition.Reason).To(Equal(reason))
+		Expect(condition.ObservedGeneration).To(Equal(updated.Generation))
 	}
 
 	It("marks the library initialized when the initialization Job succeeds", func() {
@@ -211,6 +218,79 @@ func getAvailableCondition(conds []metav1.Condition) *metav1.Condition {
 	}
 	return nil
 }
+
+var _ = Describe("MediaLibrary PVC API validation", func() {
+	It("validates managed and referenced PVC configuration", func() {
+		pvcName := "existing-pvc"
+		storageClassName := "existing-storage-class"
+		cases := []struct {
+			name  string
+			pvc   feddemadevv1alpha1.MediaLibraryPVC
+			valid bool
+		}{
+			{
+				name:  "managed PVC with size",
+				pvc:   feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi")},
+				valid: true,
+			},
+			{
+				name:  "referenced PVC without managed settings",
+				pvc:   feddemadevv1alpha1.MediaLibraryPVC{PVCName: &pvcName},
+				valid: true,
+			},
+			{
+				name: "legacy referenced PVC with zero size",
+				pvc: feddemadevv1alpha1.MediaLibraryPVC{
+					PVCName: &pvcName,
+					Size:    quantityPointer("0"),
+				},
+				valid: true,
+			},
+			{
+				name: "missing PVC source",
+				pvc:  feddemadevv1alpha1.MediaLibraryPVC{},
+			},
+			{
+				name: "referenced PVC with managed size",
+				pvc: feddemadevv1alpha1.MediaLibraryPVC{
+					PVCName: &pvcName,
+					Size:    quantityPointer("1Gi"),
+				},
+			},
+			{
+				name: "referenced PVC with storage class",
+				pvc: feddemadevv1alpha1.MediaLibraryPVC{
+					PVCName:          &pvcName,
+					StorageClassName: &storageClassName,
+				},
+			},
+			{
+				name: "referenced PVC with annotations",
+				pvc: feddemadevv1alpha1.MediaLibraryPVC{
+					PVCName:     &pvcName,
+					Annotations: map[string]string{"managed": "no"},
+				},
+			},
+		}
+
+		for _, testCase := range cases {
+			By(testCase.name)
+			library := &feddemadevv1alpha1.MediaLibrary{
+				ObjectMeta: metav1.ObjectMeta{Name: "pvc-validation-" + strings.ToLower(strings.ReplaceAll(testCase.name, " ", "-")), Namespace: defaultNamespace},
+				Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: testCase.pvc},
+			}
+			err := k8sClient.Create(context.Background(), library)
+			if testCase.valid {
+				Expect(err).NotTo(HaveOccurred(), testCase.name)
+				DeferCleanup(func() {
+					Expect(k8sClient.Delete(context.Background(), library)).To(Succeed())
+				})
+				continue
+			}
+			Expect(err).To(HaveOccurred(), testCase.name)
+		}
+	})
+})
 
 func createMediaLibraryWithFinalizer(ctx context.Context, reconciler *MediaLibraryReconciler, ml *feddemadevv1alpha1.MediaLibrary) {
 	GinkgoHelper()
@@ -266,7 +346,7 @@ var _ = Describe("MediaLibrary finalization", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "finalization-retained-library", Namespace: defaultNamespace},
 			Spec: feddemadevv1alpha1.MediaLibrarySpec{
 				PVCRetentionPolicy: feddemadevv1alpha1.PVCRetentionPolicyRetain,
-				PVC:                feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")},
+				PVC:                feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi")},
 			},
 		}
 		reconciler := &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -313,7 +393,7 @@ var _ = Describe("MediaLibrary finalization", func() {
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: "finalization-default-library", Namespace: defaultNamespace},
 			Spec: feddemadevv1alpha1.MediaLibrarySpec{
-				PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi")},
+				PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi")},
 			},
 		}
 		reconciler := &MediaLibraryReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -395,6 +475,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCFound"))
+			g.Expect(cond.ObservedGeneration).To(Equal(updated.Generation))
 			g.Expect(updated.Status.Initialized).To(BeTrue())
 			g.Expect(updated.Status.EffectivePVC).NotTo(BeNil())
 			g.Expect(*updated.Status.EffectivePVC).To(Equal(pvcName))
@@ -441,6 +522,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCInvalidAccessMode"))
+			g.Expect(cond.ObservedGeneration).To(Equal(updated.Generation))
 			g.Expect(updated.Status.Initialized).To(BeFalse())
 			g.Expect(updated.Status.EffectivePVC).To(BeNil())
 		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
@@ -468,6 +550,7 @@ var _ = Describe("MediaLibrary Existing PVC Scenarios", func() {
 			g.Expect(cond).NotTo(BeNil())
 			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(cond.Reason).To(Equal("ExistingPVCNotFound"))
+			g.Expect(cond.ObservedGeneration).To(Equal(updated.Generation))
 			g.Expect(updated.Status.Initialized).To(BeFalse())
 			g.Expect(updated.Status.EffectivePVC).To(BeNil())
 		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
@@ -503,7 +586,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
 			Spec: feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{
-				Size:             resource.MustParse("1Gi"),
+				Size:             quantityPointer("1Gi"),
 				StorageClassName: &storageClass.Name,
 			}},
 		}
@@ -515,6 +598,12 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 		pvc := &corev1.PersistentVolumeClaim{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, pvc)).To(Succeed())
 		Expect(pvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("1Gi")))
+		updated := &feddemadevv1alpha1.MediaLibrary{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, updated)).To(Succeed())
+		condition := getAvailableCondition(updated.Status.Conditions)
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Reason).To(Equal("PVCCreated"))
+		Expect(condition.ObservedGeneration).To(Equal(updated.Generation))
 
 		// Envtest has no volume controller to mark claims as bound before resizing.
 		pvc.Status.Phase = corev1.ClaimBound
@@ -524,7 +613,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 		Eventually(func(g Gomega) {
 			current := &feddemadevv1alpha1.MediaLibrary{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mlName, Namespace: ns}, current)).To(Succeed())
-			current.Spec.PVC.Size = resource.MustParse("2Gi")
+			current.Spec.PVC.Size = quantityPointer("2Gi")
 			g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
 		}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
@@ -541,7 +630,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
-			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi"), Annotations: map[string]string{"a": "1"}}},
+			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi"), Annotations: map[string]string{"a": "1"}}},
 		}
 		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 
@@ -577,7 +666,7 @@ var _ = Describe("MediaLibrary Managed PVC Scenarios", func() {
 
 		ml := &feddemadevv1alpha1.MediaLibrary{
 			ObjectMeta: metav1.ObjectMeta{Name: mlName, Namespace: ns},
-			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: resource.MustParse("1Gi"), StorageClassName: &originalSC}},
+			Spec:       feddemadevv1alpha1.MediaLibrarySpec{PVC: feddemadevv1alpha1.MediaLibraryPVC{Size: quantityPointer("1Gi"), StorageClassName: &originalSC}},
 		}
 		createMediaLibraryWithFinalizer(ctx, reconciler, ml)
 

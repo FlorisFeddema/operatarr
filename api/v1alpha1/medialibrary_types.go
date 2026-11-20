@@ -53,6 +53,8 @@ const (
 )
 
 // MediaLibraryPVC defines the PersistentVolumeClaim to use for the MediaLibrary.
+// +kubebuilder:validation:XValidation:rule="has(self.pvcName) || has(self.size)",message="Either pvcName or size must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.pvcName) || (!has(self.storageClassName) && !has(self.annotations) && (!has(self.size) || self.size == '0'))",message="Only pvcName or size/storageClassName/annotations can be set, not both"
 type MediaLibraryPVC struct {
 	// PVCName is name of a pre-existing PersistentVolumeClaim to use for the MediaLibrary.
 	// +kubebuilder:validation:Optional
@@ -60,7 +62,7 @@ type MediaLibraryPVC struct {
 
 	// Size defines the size of the PersistentVolumeClaim to create for the MediaLibrary.
 	// +kubebuilder:validation:Optional
-	Size resource.Quantity `json:"size"`
+	Size *resource.Quantity `json:"size,omitempty"`
 
 	// StorageClassName is the name of the StorageClass to use for the PersistentVolumeClaim.
 	// +kubebuilder:validation:Optional
@@ -111,8 +113,8 @@ type MediaLibraryStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=ml
-// +kubebuilder:printcolumn:name="PVC",type=string,JSONPath=`.status.actualPVCName`,description="The name of the PersistentVolumeClaim"
-// +kubebuilder:printcolumn:name="Size",type=date,JSONPath=`.status.resources.requests.storage`,description="The size of the MediaLibrary"
+// +kubebuilder:printcolumn:name="PVC",type=string,JSONPath=`.status.effectivePVC`,description="The name of the PersistentVolumeClaim"
+// +kubebuilder:printcolumn:name="Size",type=string,JSONPath=`.spec.pvc.size`,description="The requested size of the managed PVC"
 // +kubebuilder:resource:scope=Namespaced
 
 // MediaLibrary is the Schema for the medialibraries API

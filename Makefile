@@ -113,11 +113,16 @@ docker-build-e2e:
 docker-build-jobrunner-e2e:
 	$(CONTAINER_TOOL) build --platform "$(E2E_PLATFORM)" -f jobrunner.Dockerfile -t "example.com/operatarr-jobrunner:e2e" .
 
+.PHONY: docker-build-sonarr-mock-e2e
+docker-build-sonarr-mock-e2e:
+	$(CONTAINER_TOOL) build --platform "$(E2E_PLATFORM)" -f test/e2e/sonarr-mock.Dockerfile -t "example.com/sonarr:e2e" .
+
 .PHONY: e2e-images
-e2e-images: docker-build-e2e docker-build-jobrunner-e2e
+e2e-images: docker-build-e2e docker-build-jobrunner-e2e docker-build-sonarr-mock-e2e
 	mkdir -p "$(E2E_IMAGE_DIR)"
 	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/manager.tar" "example.com/operatarr:e2e"
 	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/jobrunner.tar" "example.com/operatarr-jobrunner:e2e"
+	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/sonarr.tar" "example.com/sonarr:e2e"
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

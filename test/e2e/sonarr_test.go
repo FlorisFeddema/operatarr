@@ -56,7 +56,7 @@ func sonarrSpecs() {
 			Expect(createTestObject(newTestPVC(sonarrTestPVCName, corev1.ReadWriteMany))).To(Succeed())
 			Expect(waitForPVCBound(sonarrTestPVCName)).To(Succeed())
 			library := newTestLibrary(sonarrTestLibraryName, sonarrTestPVCName)
-			library.Spec.CrossNamespaceAccess = true
+			library.Spec.CrossNamespaceAccess = false
 			Expect(createTestObject(library)).To(Succeed())
 			pvcName := sonarrTestPVCName
 			expectLibraryStatus(sonarrTestLibraryName, metav1.ConditionTrue, "ExistingPVCFound", true, &pvcName)
@@ -74,9 +74,11 @@ func sonarrSpecs() {
 
 			sonarr := newTestSonarr("sonarr-without-gateway", true)
 			Expect(createTestObject(sonarr)).To(Succeed())
-			sonarr = expectSonarrCondition(sonarr.Name, metav1.ConditionTrue, "ResourcesReconciled")
+			expectSonarrCondition(sonarr.Name, metav1.ConditionTrue, "ResourcesReconciled")
 
-			assertSonarrOwnedResources(sonarr)
+			var current feddemav1alpha1.Sonarr
+			Expect(getTestObject("sonarr", sonarr.Name, &current)).To(Succeed())
+			assertSonarrOwnedResources(&current)
 			output, err = utils.Run(utils.KindKubectl(kubectlGet, "persistentvolume", sonarr.Name+"-media",
 				ignoreNotFoundFlag, "-o", "name"))
 			Expect(err).NotTo(HaveOccurred())
@@ -89,6 +91,92 @@ func sonarrSpecs() {
 			disabled := newTestSonarr("sonarr-disabled-without-gateway", false)
 			Expect(createTestObject(disabled)).To(Succeed())
 			expectSonarrCondition(disabled.Name, metav1.ConditionTrue, "ResourcesReconciled")
+		})
+
+		It("mounts the same-namespace MediaLibrary PVC when cross-namespace access is disabled", func() {
+			sonarr := newTestSonarr("sonarr-same-namespace-pvc", false)
+			Expect(createTestObject(sonarr)).To(Succeed())
+			sonarr = expectSonarrCondition(sonarr.Name, metav1.ConditionTrue, "ResourcesReconciled")
+
+			var statefulSet appsv1.StatefulSet
+			Expect(getTestObject(statefulSetKind, sonarr.Name, &statefulSet)).To(Succeed())
+			expectSonarrMediaVolume(statefulSet.Spec.Template.Spec, sonarrTestPVCName)
+
+			output, err := utils.Run(utils.KindKubectl(kubectlGet, "persistentvolume", sonarr.Name+"-media",
+				ignoreNotFoundFlag, "-o", "name"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(string(output))).To(BeEmpty())
+		})
+
+		It("runs with the media volume mounted and is reachable through its Service", func() {
+			sonarr := newTestSonarr("sonarr-ready", false)
+			sonarr.Spec.PodSpec.Image = sonarrMockImage
+			Expect(createTestObject(sonarr)).To(Succeed())
+			expectSonarrCondition(sonarr.Name, metav1.ConditionTrue, "ResourcesReconciled")
+
+			podName := sonarr.Name + "-0"
+			_, err := utils.Run(utils.KindKubectl("wait", "--for=condition=Ready", twoMinuteTimeoutFlag,
+				"pod/"+podName, namespaceFlag, mediaNamespace))
+			Expect(err).NotTo(HaveOccurred())
+
+			var pod corev1.Pod
+			Expect(getTestObject("pod", podName, &pod)).To(Succeed())
+			expectSonarrMediaVolume(pod.Spec, sonarrTestPVCName)
+
+			By("checking the Service responds successfully from inside the cluster")
+			checkPodName := sonarr.Name + "-http-check"
+			DeferCleanup(func() {
+				_, cleanupErr := utils.Run(utils.KindKubectl(kubectlDelete, podResource, checkPodName,
+					ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace))
+				Expect(cleanupErr).NotTo(HaveOccurred())
+			})
+			_, err = utils.Run(utils.KindKubectl("run", checkPodName, "--image=curlimages/curl:8.12.1",
+				"--restart=Never", namespaceFlag, mediaNamespace, "--command", "--", "curl",
+				"--fail", "--silent", "--show-error", "http://"+sonarr.Name+":"+fmt.Sprint(sonarrTestPort)+"/ping"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(waitForTestPod(checkPodName)).To(Succeed())
+		})
+
+		It("reports cross-namespace MediaLibrary references as unsupported", func() {
+			const libraryName = "cross-namespace-library"
+			pvcName := sonarrTestPVCName
+			library := newTestLibrary(libraryName, sonarrTestPVCName)
+			library.Spec.CrossNamespaceAccess = true
+			Expect(createTestObject(library)).To(Succeed())
+			expectLibraryStatus(libraryName, metav1.ConditionTrue, "ExistingPVCFound", true, &pvcName)
+
+			sonarrNamespace := mediaNamespace + "-sonarr"
+			namespaceObject := &corev1.Namespace{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+				ObjectMeta: metav1.ObjectMeta{Name: sonarrNamespace, Labels: map[string]string{e2eRunLabel: mediaNamespace}},
+			}
+			Expect(createTestObject(namespaceObject)).To(Succeed())
+			DeferCleanup(func() {
+				_, cleanupErr := utils.Run(utils.KindKubectl(kubectlDelete, "namespace", sonarrNamespace,
+					ignoreNotFoundFlag, twoMinuteTimeoutFlag))
+				Expect(cleanupErr).NotTo(HaveOccurred())
+			})
+
+			sonarr := newTestSonarr("sonarr-cross-namespace", false)
+			sonarr.Namespace = sonarrNamespace
+			sonarr.Spec.MediaLibraryRef = corev1.ObjectReference{
+				Kind: mediaLibraryKind, Name: libraryName, Namespace: mediaNamespace,
+			}
+			Expect(createTestObject(sonarr)).To(Succeed())
+			DeferCleanup(func() {
+				_, cleanupErr := utils.Run(utils.KindKubectl(kubectlDelete, "sonarr", sonarr.Name,
+					ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, sonarrNamespace))
+				Expect(cleanupErr).NotTo(HaveOccurred())
+			})
+			expectSonarrConditionInNamespace(sonarrNamespace, sonarr.Name, metav1.ConditionFalse,
+				"CrossNamespaceMediaLibraryUnsupported")
+
+			for _, kind := range []string{statefulSetKind, serviceKind} {
+				output, err := utils.Run(utils.KindKubectl(kubectlGet, kind, sonarr.Name,
+					ignoreNotFoundFlag, "-o", "name", namespaceFlag, sonarrNamespace))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strings.TrimSpace(string(output))).To(BeEmpty())
+			}
 		})
 
 		It("creates, deletes, and recreates HTTPRoutes as routing is changed", func() {
@@ -270,11 +358,17 @@ func newTestSonarr(name string, routeEnabled bool) *feddemav1alpha1.Sonarr {
 }
 
 func expectSonarrCondition(name string, status metav1.ConditionStatus, reason string) *feddemav1alpha1.Sonarr {
+	return expectSonarrConditionInNamespace(mediaNamespace, name, status, reason)
+}
+
+func expectSonarrConditionInNamespace(
+	objectNamespace, name string, status metav1.ConditionStatus, reason string,
+) *feddemav1alpha1.Sonarr {
 	GinkgoHelper()
 	var observed feddemav1alpha1.Sonarr
 	Eventually(func(g Gomega) {
 		var sonarr feddemav1alpha1.Sonarr
-		g.Expect(getTestObject("sonarr", name, &sonarr)).To(Succeed())
+		g.Expect(getNamespacedObject(objectNamespace, "sonarr", name, &sonarr)).To(Succeed())
 		condition := meta.FindStatusCondition(sonarr.Status.Conditions, "Available")
 		g.Expect(condition).NotTo(BeNil())
 		g.Expect(condition.Status).To(Equal(status))
@@ -283,6 +377,31 @@ func expectSonarrCondition(name string, status metav1.ConditionStatus, reason st
 		observed = sonarr
 	}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	return &observed
+}
+
+func expectSonarrMediaVolume(podSpec corev1.PodSpec, pvcName string) {
+	GinkgoHelper()
+	var mediaVolume *corev1.Volume
+	for i := range podSpec.Volumes {
+		if podSpec.Volumes[i].Name == "media" {
+			mediaVolume = &podSpec.Volumes[i]
+			break
+		}
+	}
+	Expect(mediaVolume).NotTo(BeNil())
+	Expect(mediaVolume.PersistentVolumeClaim).NotTo(BeNil())
+	Expect(mediaVolume.PersistentVolumeClaim.ClaimName).To(Equal(pvcName))
+
+	Expect(podSpec.Containers).NotTo(BeEmpty())
+	var mediaMount *corev1.VolumeMount
+	for i := range podSpec.Containers[0].VolumeMounts {
+		if podSpec.Containers[0].VolumeMounts[i].Name == "media" {
+			mediaMount = &podSpec.Containers[0].VolumeMounts[i]
+			break
+		}
+	}
+	Expect(mediaMount).NotTo(BeNil())
+	Expect(mediaMount.MountPath).To(Equal("/media"))
 }
 
 func assertSonarrOwnedResources(sonarr *feddemav1alpha1.Sonarr) {
@@ -303,6 +422,7 @@ func assertSonarrOwnedResources(sonarr *feddemav1alpha1.Sonarr) {
 			metadata = statefulSet.ObjectMeta
 			Expect(statefulSet.Spec.VolumeClaimTemplates).To(HaveLen(1))
 			Expect(statefulSet.Spec.VolumeClaimTemplates[0].Name).To(Equal("config"))
+			expectSonarrMediaVolume(statefulSet.Spec.Template.Spec, sonarrTestPVCName)
 		case serviceKind:
 			var service corev1.Service
 			Expect(getTestObject(object.kind, object.name, &service)).To(Succeed())

@@ -1,11 +1,11 @@
 # E2E test plan
 
 This document records the work to make the cluster end-to-end (e2e) suite in
-[test/e2e](../test/e2e/) reliable and the flows to add afterwards. The harness,
-Operator flows B1–B4, MediaLibrary flows B5–B9 and B11–B13, and Sonarr flows
-B14–B20 passed on a local Linux/arm64 kind cluster. Items marked **approval**
-fall under the approval boundaries in
-[AGENTS.md](../AGENTS.md) and need explicit sign-off before implementation.
+[test/e2e](../test/e2e/) reliable and the flows to add afterwards. The full
+23-spec suite, including Sonarr storage flows B21–B23, passed on a local
+Linux/arm64 kind cluster. Items marked **approval** fall under the approval
+boundaries in [AGENTS.md](../AGENTS.md) and need explicit sign-off before
+implementation.
 
 ## Current state
 
@@ -26,20 +26,31 @@ Operator flows and the MediaLibrary flows in
 6. On test failure, the suite prints manager pods, descriptions, logs, and
    namespace events. Teardown removes the test-only metrics grant and overlay.
 
-MediaLibrary flows B5–B9 and B11–B13 are implemented. `make test` and CI
-exclude this suite. All 12 specs (B1–B9 and B11–B13) passed on Kubernetes
-v1.37.0 in a local Linux/arm64 kind cluster with rootless Podman, using the
-single-node local-path RWX provisioner. The full 19-spec suite took about
-5 minutes 37 seconds, and teardown removed the CRDs, operator, and test
+MediaLibrary flows B5–B13 are implemented. `make test` and CI exclude this
+suite. The 20-spec suite (B1–B20) passed on Kubernetes v1.37.0 in a local
+Linux/arm64 kind cluster with rootless Podman, using the single-node local-path
+RWX provisioner. B10 verifies that increasing the MediaLibrary size updates
+the PVC request; it does not assert backend capacity growth. The run took
+about 5 minutes 52 seconds, and teardown removed the CRDs, operator, and test
 storage. An earlier B8 run with NFS failed because the rootless node rejected
 the NFS mount; the local-path backend replaced it.
 
+The latest full run passed all 23 specs, including Sonarr storage flows B21–B23,
+in about 6 minutes 17 seconds.
+
 Sonarr flows B14–B20 are implemented in
 [sonarr_test.go](../test/e2e/sonarr_test.go). They passed as part of the full
-19-spec run, including HTTPRoute deletion and recreation. The suite installs
+20-spec run, including HTTPRoute deletion and recreation. The suite installs
 the pinned Gateway API HTTPRoute CRD and restarts the manager to test optional
 API detection and route creation, then removes the CRD. An earlier run exposed
 and fixed missing Gateway API scheme registration and Service drift detection.
+
+Sonarr now mounts the referenced MediaLibrary PVC directly when both resources
+are in the same namespace. B21–B23 cover Pod readiness and Service reachability,
+same-namespace mounting without a PV, and the explicit unsupported condition
+for cross-namespace references. The B21 test uses a local mock image that only
+passes its `/ping` probe when `/media` is mounted. All three flows passed in
+the latest full e2e run.
 
 ## Part A: make the existing suite work
 
@@ -144,23 +155,19 @@ removed; [config/samples](../config/samples/) holds the example resources.
 | B7 Missing PVC created later | Initially `ExistingPVCNotFound`; recovers after the PVC is created | 1 |
 | B8 Managed PVC and initialization Job | PVC created with owner reference and ReadWriteMany; `<name>-pvc-init` Job completes; reason `PVCInitialized`; `movies`, `tv`, and `music` folders exist (checked with a debug pod) | 1, after A3, A4, and ReadWriteMany storage |
 | B9 Initialization Job failure | A failing Job leads to reason `PVCInitializationFailed` and not initialized | 1 |
-| B10 Resize | Increasing the size on an expandable StorageClass updates the PVC request | 2, needs an expandable ReadWriteMany class |
+| B10 Resize | Increasing the size on an expandable StorageClass updates the PVC request | 2, implemented and passed |
 | B11 StorageClass change rejected | Error or condition reported, PVC unchanged | 1 |
 | B12 Deletion | With `pvcRetentionPolicy: Delete`, deleting the MediaLibrary removes its managed PVC; with `Retain`, the PVC and data remain while the initialization Job is cleaned up. A PVC supplied by `spec.pvc.pvcName` is never deleted. | 1, implemented |
 | B13 Idempotency | Resource versions of the MediaLibrary, PVC, and Job stay stable across resyncs | 1 |
 
 ### Sonarr
 
-Current limitations: the StatefulSet mounts the placeholder claim
-[`mediaPvcName`](../internal/controller/sonarr_controller.go#L388), so the
-Sonarr pod stays `Pending`. B14–B20 test controller resources without asserting
-pod readiness and use `crossNamespaceAccess: true`. When
-`crossNamespaceAccess` is `false`,
-[`reconcileMediaPersistentVolume`](../internal/controller/sonarr_controller.go#L542)
-creates a PV without a volume source, which a real API server rejects; that
-path remains deferred to B22. Disabling routing deletes the Sonarr-owned
-HTTPRoute, even if its MediaLibrary is unavailable; a route disabled from
-creation is not created.
+Sonarr mounts the referenced MediaLibrary PVC directly when it is in the same
+namespace. Cross-namespace references report
+`CrossNamespaceMediaLibraryUnsupported`, regardless of
+`crossNamespaceAccess`, until a shareable RWX backend is selected. Disabling
+routing deletes the Sonarr-owned HTTPRoute, even if its MediaLibrary is
+unavailable; a route disabled from creation is not created.
 
 | Flow | Assertions | Priority |
 |------|------------|----------|
@@ -171,9 +178,9 @@ creation is not created.
 | B18 Spec updates | Changing the image or resource requests updates the StatefulSet | 1 |
 | B19 Drift correction | A manually edited or deleted Service is restored | 1 |
 | B20 Deletion | Owned resources are garbage-collected and the finalizer is removed | 1 |
-| B21 Pod ready and reachable | Pod runs with the media volume mounted and returns HTTP 200 through the Service | 2 |
-| B22 `crossNamespaceAccess: false` | PV creation path works | 2 |
-| B23 MediaLibrary in another namespace | Cross-namespace reference behaves as designed | 2 |
+| B21 Pod ready and reachable | Pod runs with the media volume mounted and returns HTTP 200 through the Service | 2, implemented and passed |
+| B22 `crossNamespaceAccess: false` | Same-namespace PVC mounts directly; no PV is created | 2, implemented and passed |
+| B23 MediaLibrary in another namespace | Sonarr reports `CrossNamespaceMediaLibraryUnsupported` and creates no dependent resources | 2, implemented and passed |
 
 ### Robustness (later)
 
@@ -187,9 +194,8 @@ creation is not created.
 1. Harness fixes A2, A3, and A5–A11, including the approved minimal RBAC A1;
    then B1–B4. **Implemented and passed on Linux/arm64 kind.** The AGENTS.md
    e2e rule (step 14) is also in place.
-2. Single-node RWX provisioner; then B5–B9 and B11–B13. **Implemented and
-   passed on Linux/arm64 kind**, including the A4 and managed-PVC
-   reconciliation fixes.
+2. Single-node RWX provisioner; then B5–B13. **Implemented and passed on
+   Linux/arm64 kind**, including the A4 and managed-PVC reconciliation fixes.
 3. Sonarr flows B14–B20. **Implemented and passed on Linux/arm64 kind.**
 4. `pvcRetentionPolicy` supports `Delete` (the default) and `Retain` for
    operator-managed PVCs; referenced user PVCs are untouched. **Implemented
@@ -198,7 +204,8 @@ creation is not created.
 5. Add the manually triggered CI job (step 12) once the suite is stable and
    runs in roughly ten minutes. **Implemented** as a separate
    [e2e.yaml](../.github/workflows/e2e.yaml) workflow; not yet run in CI.
-6. Priority 2 flows after the storage design is approved.
+6. Sonarr storage flows B21–B23. **Implemented and passed on Linux/arm64 kind.**
+   Cross-namespace data sharing remains deferred until an RWX backend is chosen.
 
 ## Decisions recorded
 

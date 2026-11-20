@@ -119,7 +119,11 @@ func (in *MediaLibraryPVC) DeepCopyInto(out *MediaLibraryPVC) {
 		*out = new(string)
 		**out = **in
 	}
-	out.Size = in.Size.DeepCopy()
+	if in.Size != nil {
+		in, out := &in.Size, &out.Size
+		x := (*in).DeepCopy()
+		*out = &x
+	}
 	if in.StorageClassName != nil {
 		in, out := &in.StorageClassName, &out.StorageClassName
 		*out = new(string)

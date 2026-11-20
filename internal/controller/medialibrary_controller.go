@@ -215,10 +215,11 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 			}
 
 			cond := metav1.Condition{
-				Type:    typeAvailable,
-				Status:  metav1.ConditionFalse,
-				Reason:  "ExistingPVCNotFound",
-				Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' was not found",
+				Type:               typeAvailable,
+				Status:             metav1.ConditionFalse,
+				Reason:             "ExistingPVCNotFound",
+				Message:            "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' was not found",
+				ObservedGeneration: r.object.Generation,
 			}
 			utils.MergeConditions(&r.object.Status.Conditions, cond)
 			r.object.Status.Initialized = false
@@ -230,10 +231,11 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		if !slices.Contains(pvc.Spec.AccessModes, corev1.ReadWriteMany) {
 			err := errors.New("pre-existing PVC does not have ReadWriteMany access mode")
 			cond := metav1.Condition{
-				Type:    typeAvailable,
-				Status:  metav1.ConditionFalse,
-				Reason:  "ExistingPVCInvalidAccessMode",
-				Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' does not have ReadWriteMany access mode",
+				Type:               typeAvailable,
+				Status:             metav1.ConditionFalse,
+				Reason:             "ExistingPVCInvalidAccessMode",
+				Message:            "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' does not have ReadWriteMany access mode",
+				ObservedGeneration: r.object.Generation,
 			}
 			utils.MergeConditions(&r.object.Status.Conditions, cond)
 			r.object.Status.Initialized = false
@@ -242,15 +244,20 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		}
 
 		cond := metav1.Condition{
-			Type:    typeAvailable,
-			Status:  metav1.ConditionTrue,
-			Reason:  "ExistingPVCFound",
-			Message: "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' was found",
+			Type:               typeAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             "ExistingPVCFound",
+			Message:            "The specified pre-existing PVC '" + *r.object.Spec.PVC.PVCName + "' was found",
+			ObservedGeneration: r.object.Generation,
 		}
 		utils.MergeConditions(&r.object.Status.Conditions, cond)
 		r.object.Status.EffectivePVC = r.object.Spec.PVC.PVCName
 		r.object.Status.Initialized = true
 		return r.updateStatus()
+	}
+
+	if r.object.Spec.PVC.Size == nil {
+		return errors.New("size is required for a managed PVC")
 	}
 
 	r.log.V(1).Info("Creating or patching PVC", "pvcName", r.object.Name)
@@ -271,7 +278,7 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 		if pvc.Spec.Resources.Requests == nil {
 			pvc.Spec.Resources.Requests = corev1.ResourceList{}
 		}
-		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = r.object.Spec.PVC.Size
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = *r.object.Spec.PVC.Size
 		pvc.Spec.StorageClassName = storageClass
 		pvc.Annotations = mergeMap(pvc.GetAnnotations(), r.object.Spec.PVC.Annotations)
 
@@ -287,10 +294,11 @@ func (r *mediaLibraryReconcile) reconcileMainPvc() error {
 	if opResult != controllerutil.OperationResultNone ||
 		r.object.Status.EffectivePVC == nil || *r.object.Status.EffectivePVC != pvc.Name {
 		cond := metav1.Condition{
-			Type:    typeAvailable,
-			Status:  metav1.ConditionFalse,
-			Reason:  "PVCCreated",
-			Message: fmt.Sprintf("The PVC '%s' was successfully created", pvc.Name),
+			Type:               typeAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             "PVCCreated",
+			Message:            fmt.Sprintf("The PVC '%s' was successfully created", pvc.Name),
+			ObservedGeneration: r.object.Generation,
 		}
 		utils.MergeConditions(&r.object.Status.Conditions, cond)
 		r.object.Status.Initialized = false
@@ -327,12 +335,12 @@ func initializeJob(r *mediaLibraryReconcile) error {
 			if c.Type == v1.JobComplete && c.Status == corev1.ConditionTrue {
 				// if the job completed successfully, set initialized to true
 				cond := metav1.Condition{
-					Type:    typeAvailable,
-					Status:  metav1.ConditionTrue,
-					Reason:  "PVCInitialized",
-					Message: "The PVC is initialized",
+					Type:               typeAvailable,
+					Status:             metav1.ConditionTrue,
+					Reason:             "PVCInitialized",
+					Message:            "The PVC is initialized",
+					ObservedGeneration: r.object.Generation,
 				}
-				cond.ObservedGeneration = r.object.Generation
 				utils.MergeConditions(&r.object.Status.Conditions, cond)
 				r.object.Status.Initialized = true
 				if err := r.updateStatus(); err != nil {
@@ -345,12 +353,12 @@ func initializeJob(r *mediaLibraryReconcile) error {
 			if c.Type == v1.JobFailed && c.Status == corev1.ConditionTrue {
 				jobErr := fmt.Errorf("PVC initialization job %s failed: %s", client.ObjectKeyFromObject(job), c.Message)
 				cond := metav1.Condition{
-					Type:    typeAvailable,
-					Status:  metav1.ConditionFalse,
-					Reason:  "PVCInitializationFailed",
-					Message: "The PVC initialization job failed: " + c.Message,
+					Type:               typeAvailable,
+					Status:             metav1.ConditionFalse,
+					Reason:             "PVCInitializationFailed",
+					Message:            "The PVC initialization job failed: " + c.Message,
+					ObservedGeneration: r.object.Generation,
 				}
-				cond.ObservedGeneration = r.object.Generation
 				previous := meta.FindStatusCondition(r.object.Status.Conditions, typeAvailable)
 				changed := previous == nil || previous.Status != cond.Status || previous.Reason != cond.Reason ||
 					previous.Message != cond.Message || previous.ObservedGeneration != cond.ObservedGeneration

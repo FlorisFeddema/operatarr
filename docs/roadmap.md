@@ -39,21 +39,20 @@ repository currently implements Sonarr and MediaLibrary resources.
 
 ### Storage and integration
 
-- The Sonarr StatefulSet uses a placeholder PVC claim name, and the Sonarr
-  media volume path is unfinished.
-- The current PersistentVolume reconciliation does not define a backing volume
-  source. The intended storage design, cross-namespace model, and deletion
-  behavior need to be decided before implementation.
+- The Sonarr StatefulSet mounts the MediaLibrary's effective PVC directly when
+  both resources are in the same namespace; Sonarr does not own its PVC.
+- Cross-namespace media sharing remains unsupported until an RWX backend is
+  selected. The existing MediaLibrary remains the sole owner of media data and
+  its PVC lifecycle.
 - HTTPRoute is enabled by default, but skipped if Gateway API is unavailable;
   other Sonarr resources continue reconciling.
 
 ### API, documentation, and product scope
 
-- MediaLibrary PVC validation markers do not currently produce the intended
-  validation in the generated CRD; one expression refers to `resources` while
-  the API field is `size`.
-- MediaLibrary printer columns refer to status paths that do not match the
-  implemented status fields, and the size column has an unsuitable type.
+- MediaLibrary PVC validation now requires a PVC name or managed PVC size and
+  prevents mixing referenced-PVC and managed-PVC settings. A legacy zero size
+  alongside a PVC name remains valid for typed Go clients.
+- MediaLibrary printer columns now show the effective PVC and requested size.
 - The README feature, installation, and usage sections and both resource
   samples remain placeholders.
 - Additional ARR applications are aspirations, not currently implemented
@@ -69,7 +68,7 @@ repository currently implements Sonarr and MediaLibrary resources.
 - [x] Select the latest published envtest assets within Kubernetes 1.35; the
   former 1.35.10 patch pin was not available from the asset index.
 
-### 1. Reconciliation reliability — in progress
+### 1. Reconciliation reliability — complete
 
 - [x] Safely handle omitted optional Sonarr security-context and MediaLibrary
   permission fields. Preserve the documented permission defaults where
@@ -88,27 +87,32 @@ repository currently implements Sonarr and MediaLibrary resources.
 **RBAC approval:** Approved for manager `batch/jobs` permissions limited to
 `create`, `get`, `list`, and `watch`, required by initialization and Job watches.
 
-### 2. Storage design and completion
+### 2. Storage design and completion — complete
 
-- [ ] Agree on ownership, namespace access, mounting, PV/PVC behavior, and
+- [x] Agree on ownership, namespace access, mounting, PV/PVC behavior, and
   cleanup semantics.
-- [ ] Replace the placeholder Sonarr media claim with the selected MediaLibrary
+- [x] Replace the placeholder Sonarr media claim with the selected MediaLibrary
   PVC integration.
-- [ ] Reconcile PVs only if the approved storage model requires them, including
+- [x] Reconcile PVs only if the approved storage model requires them, including
   the correct backing source.
-- [ ] Test the supported access modes and namespace cases.
+- [x] Test the supported access modes and namespace cases.
 
-**Approval gate:** Obtain approval before changing storage behavior or deletion
-policy.
+The approved initial model supports same-namespace PVC mounting; no PV is
+required. Sonarr does not own or delete the MediaLibrary PVC. Cross-namespace
+sharing remains deferred pending selection of an RWX backend. B21–B23 passed in
+the 23-spec local kind e2e run.
 
-### 3. Status and API correctness
+**Approval gate:** Obtain approval before further changes to storage behavior
+or deletion policy.
+
+### 3. Status and API correctness — complete
 
 - [x] Ensure initialization and readiness status never report success for
   unusable dependencies.
 - [x] Update existing conditions when their reason or message changes, while
   preserving transition-time semantics.
-- [ ] Correct MediaLibrary PVC validation and printer columns.
-- [ ] Report observed generation consistently where appropriate.
+- [x] Correct MediaLibrary PVC validation and printer columns.
+- [x] Report observed generation consistently where appropriate.
 
 **Approval gate:** Obtain explicit approval before editing API types, markers,
 or generated CRD schema. Regenerate manifests only after approval.
