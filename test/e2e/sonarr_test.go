@@ -46,7 +46,9 @@ const (
 var gatewayAPICRDInstalled bool
 
 func sonarrSpecs() {
-	Context("Sonarr", Ordered, func() {
+	Context("Sonarr", Ordered, Label("sonarr"), func() {
+		BeforeAll(setupMediaLibraryHarness)
+
 		It("reports a missing MediaLibrary and recovers when it appears", func() {
 			sonarr := newTestSonarr("sonarr-missing-library", true)
 			Expect(createTestObject(sonarr)).To(Succeed())
@@ -125,14 +127,17 @@ func sonarrSpecs() {
 
 			By("checking the Service responds successfully from inside the cluster")
 			checkPodName := sonarr.Name + "-http-check"
+			checkNamespace := mediaNamespace
 			DeferCleanup(func() {
 				_, cleanupErr := utils.Run(utils.KindKubectl(kubectlDelete, podResource, checkPodName,
-					ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace))
+					ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, checkNamespace))
 				Expect(cleanupErr).NotTo(HaveOccurred())
 			})
 			_, err = utils.Run(utils.KindKubectl("run", checkPodName, "--image=curlimages/curl:8.12.1",
 				"--restart=Never", namespaceFlag, mediaNamespace, "--command", "--", "curl",
-				"--fail", "--silent", "--show-error", "http://"+sonarr.Name+":"+fmt.Sprint(sonarrTestPort)+"/ping"))
+				"--fail", "--silent", "--show-error", "--retry", "10", "--retry-connrefused",
+				"--retry-delay", "1", "--max-time", "5",
+				"http://"+sonarr.Name+":"+fmt.Sprint(sonarrTestPort)+"/ping"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(waitForTestPod(checkPodName)).To(Succeed())
 		})
@@ -179,7 +184,7 @@ func sonarrSpecs() {
 			}
 		})
 
-		It("creates, deletes, and recreates HTTPRoutes as routing is changed", func() {
+		It("creates, deletes, and recreates HTTPRoutes as routing is changed", Label("restart"), Label("slow"), func() {
 			By("installing the pinned Gateway API HTTPRoute CRD")
 			Expect(installGatewayHTTPRouteCRD()).To(Succeed())
 

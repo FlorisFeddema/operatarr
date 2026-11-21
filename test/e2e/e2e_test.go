@@ -39,21 +39,24 @@ const (
 	podResource        = "pods"
 	ignoreNotFoundFlag = "--ignore-not-found=true"
 	managerDeployment  = "operatarr-controller-manager"
+	managerContainer   = "manager"
 	managerSelector    = "control-plane=controller-manager"
 	leaderElectionName = "f9ce3012.feddema.dev"
 	managerImage       = "example.com/operatarr:e2e"
+	previousManagerEnv = "E2E_PREVIOUS_MANAGER_IMAGE"
 	jobRunnerImage     = "example.com/operatarr-jobrunner:e2e"
 	sonarrMockImage    = "example.com/sonarr:e2e"
-	stabilityWindow    = 2 * time.Minute
 )
 
 var (
 	targetContextVerified bool
 	overlayApplyAttempted bool
+	e2eStartedAt          time.Time
 )
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
+		e2eStartedAt = time.Now()
 		By("verifying the current context is the selected kind cluster")
 		Expect(verifyKindContext()).To(Succeed())
 		targetContextVerified = true
@@ -63,7 +66,9 @@ var _ = Describe("controller", Ordered, func() {
 
 		By("installing CRDs and deploying the manager from the e2e overlay")
 		overlayApplyAttempted = true
+		deployStartedAt := time.Now()
 		_, err := utils.Run(utils.KindKubectl("apply", "-k", "test/e2e/overlay"))
+		reportE2ETiming("overlay-deploy", deployStartedAt)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	})
 
@@ -74,9 +79,15 @@ var _ = Describe("controller", Ordered, func() {
 
 		var cleanupErrors []error
 		operatorCleanupBlocked := false
+		if overlayApplyAttempted {
+			By("checking manager logs for RBAC errors after all specs")
+			if err := timeE2EOperation("cleanup-rbac-log-scan", verifyNoManagerRBACErrors); err != nil {
+				cleanupErrors = append(cleanupErrors, err)
+			}
+		}
 		if mediaNamespaceCreated {
 			By("removing MediaLibrary resources before uninstalling test storage")
-			if err := cleanupMediaResources(); err != nil {
+			if err := timeE2EOperation("cleanup-medialibrary-total", cleanupMediaResources); err != nil {
 				operatorCleanupBlocked = true
 				cleanupErrors = append(cleanupErrors, err)
 			} else {
@@ -88,7 +99,10 @@ var _ = Describe("controller", Ordered, func() {
 		By("removing e2e-only metrics access")
 		metricsCleanup := utils.KindKubectl(kubectlDelete, "-f",
 			"test/e2e/manifests/metrics-reader.yaml", ignoreNotFoundFlag)
-		if _, err := utils.Run(metricsCleanup); err != nil {
+		if err := timeE2EOperation("cleanup-metrics-access", func() error {
+			_, err := utils.Run(metricsCleanup)
+			return err
+		}); err != nil {
 			cleanupErrors = append(cleanupErrors, err)
 		}
 
@@ -99,20 +113,27 @@ var _ = Describe("controller", Ordered, func() {
 			By("undeploying the manager and removing its CRDs and RBAC")
 			overlayCleanup := utils.KindKubectl(kubectlDelete, "-k",
 				"test/e2e/overlay", ignoreNotFoundFlag)
-			if _, err := utils.Run(overlayCleanup); err != nil {
+			if err := timeE2EOperation("cleanup-operator-overlay", func() error {
+				_, err := utils.Run(overlayCleanup)
+				return err
+			}); err != nil {
 				operatorCleanupBlocked = true
 				cleanupErrors = append(cleanupErrors, err)
 			}
 		}
 		if gatewayAPICRDInstalled && !operatorCleanupBlocked {
 			By("removing the test-only Gateway API CRD")
-			if _, err := utils.Run(utils.KindKubectl(kubectlDelete, "crd",
-				"httproutes.gateway.networking.k8s.io", ignoreNotFoundFlag, "--wait=true", "--timeout=2m")); err != nil {
+			if err := timeE2EOperation("cleanup-gateway-api-crd", func() error {
+				_, err := utils.Run(utils.KindKubectl(kubectlDelete, "crd",
+					"httproutes.gateway.networking.k8s.io", ignoreNotFoundFlag, "--wait=true", "--timeout=2m"))
+				return err
+			}); err != nil {
 				cleanupErrors = append(cleanupErrors, err)
 			} else {
 				gatewayAPICRDInstalled = false
 			}
 		}
+		reportE2ETiming("suite-including-teardown", e2eStartedAt)
 		Expect(errors.Join(cleanupErrors...)).NotTo(HaveOccurred())
 	})
 
@@ -122,7 +143,7 @@ var _ = Describe("controller", Ordered, func() {
 		}
 	})
 
-	Context("Operator", func() {
+	Context("Operator", Label("operator"), func() {
 		It("starts and remains healthy after cache synchronization", func() {
 			By("waiting for the manager Deployment to become available")
 			cmd := utils.KindKubectl("wait",
@@ -144,7 +165,15 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			By("checking the manager does not restart during cache synchronization")
+			By("waiting for both controllers to start workers after cache synchronization")
+			Eventually(func(g Gomega) {
+				logs, logErr := managerLogs()
+				g.Expect(logErr).NotTo(HaveOccurred())
+				g.Expect(controllerStartedWorkers(logs, "medialibrary")).To(BeTrue())
+				g.Expect(controllerStartedWorkers(logs, "sonarr")).To(BeTrue())
+			}, 3*time.Minute, time.Second).Should(Succeed())
+
+			By("checking the manager does not restart after cache synchronization")
 			Consistently(func(g Gomega) {
 				podName, err := controllerPodName()
 				g.Expect(err).NotTo(HaveOccurred())
@@ -154,18 +183,10 @@ var _ = Describe("controller", Ordered, func() {
 				))
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(strings.TrimSpace(string(restarts))).To(Equal("0"))
-			}, stabilityWindow, 5*time.Second).Should(Succeed())
+			}, 10*time.Second, 2*time.Second).Should(Succeed())
 
 			By("checking manager logs for RBAC errors")
-			logs, err := utils.Run(utils.KindKubectl("logs",
-				"deployment/"+managerDeployment,
-				"--all-containers=true",
-				namespaceFlag, namespace,
-			))
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			lowerLogs := strings.ToLower(string(logs))
-			Expect(lowerLogs).NotTo(ContainSubstring("forbidden"))
-			Expect(lowerLogs).NotTo(ContainSubstring("cannot list resource"))
+			ExpectWithOffset(1, verifyNoManagerRBACErrors()).To(Succeed())
 		})
 
 		It("serves metrics to an authorized service account", func() {
@@ -259,6 +280,14 @@ func verifyKindContext() error {
 }
 
 func prepareImages() (result error) {
+	preparationStartedAt := time.Now()
+	defer reportE2ETiming("image-preparation-total", preparationStartedAt)
+
+	previousManagerImage := strings.TrimSpace(os.Getenv(previousManagerEnv))
+	if previousManagerImage != "" && previousManagerImage == managerImage {
+		return fmt.Errorf("%s must differ from the current e2e image %q", previousManagerEnv, managerImage)
+	}
+
 	platform, err := utils.KindNodePlatform()
 	if err != nil {
 		return fmt.Errorf("unable to select e2e image platform: %w", err)
@@ -274,20 +303,45 @@ func prepareImages() (result error) {
 		}
 	}()
 
-	cmd := exec.Command("make", "e2e-images",
-		"E2E_PLATFORM="+platform,
-		"E2E_IMAGE_DIR="+imageDir,
-	)
+	args := []string{
+		"e2e-images",
+		"E2E_PLATFORM=" + platform,
+		"E2E_IMAGE_DIR=" + imageDir,
+	}
+	if previousManagerImage != "" {
+		args = append(args, "E2E_PREVIOUS_MANAGER_IMAGE="+previousManagerImage)
+	}
+	cmd := exec.Command("make", args...)
+	buildStartedAt := time.Now()
 	if _, err := utils.Run(cmd); err != nil {
+		reportE2ETiming("image-build-and-save", buildStartedAt)
 		return fmt.Errorf("unable to build e2e images: %w", err)
 	}
+	reportE2ETiming("image-build-and-save", buildStartedAt)
 
-	for _, archive := range []string{"manager.tar", "jobrunner.tar", "sonarr.tar"} {
+	archives := []string{"manager.tar", "jobrunner.tar", "sonarr.tar"}
+	if previousManagerImage != "" {
+		archives = append(archives, "previous-manager.tar")
+	}
+	loadStartedAt := time.Now()
+	defer reportE2ETiming("kind-image-load", loadStartedAt)
+	for _, archive := range archives {
 		if err := utils.LoadImageArchiveToKindCluster(filepath.Join(imageDir, archive)); err != nil {
 			return fmt.Errorf("unable to load %s into kind: %w", archive, err)
 		}
 	}
 	return nil
+}
+
+func reportE2ETiming(stage string, startedAt time.Time) {
+	fmt.Fprintf(GinkgoWriter, "E2E_TIMING stage=%s duration_ms=%d\n",
+		stage, time.Since(startedAt).Milliseconds())
+}
+
+func timeE2EOperation(stage string, operation func() error) error {
+	startedAt := time.Now()
+	defer reportE2ETiming(stage, startedAt)
+	return operation()
 }
 
 func controllerPodName() (string, error) {
@@ -307,6 +361,39 @@ func controllerPodName() (string, error) {
 		return "", fmt.Errorf("expected exactly one manager pod, found %d", len(podNames))
 	}
 	return podNames[0], nil
+}
+
+func managerLogs() ([]byte, error) {
+	logs, err := utils.Run(utils.KindKubectl("logs",
+		"deployment/"+managerDeployment,
+		"--all-containers=true",
+		namespaceFlag, namespace,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("unable to read manager logs: %w", err)
+	}
+	return logs, nil
+}
+
+func controllerStartedWorkers(logs []byte, controller string) bool {
+	for _, line := range strings.Split(strings.ToLower(string(logs)), "\n") {
+		if strings.Contains(line, "starting workers") && strings.Contains(line, controller) {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyNoManagerRBACErrors() error {
+	logs, err := managerLogs()
+	if err != nil {
+		return err
+	}
+	lowerLogs := strings.ToLower(string(logs))
+	if strings.Contains(lowerLogs, "forbidden") || strings.Contains(lowerLogs, "cannot list resource") {
+		return fmt.Errorf("manager logs contain an RBAC error")
+	}
+	return nil
 }
 
 func collectDiagnostics() {

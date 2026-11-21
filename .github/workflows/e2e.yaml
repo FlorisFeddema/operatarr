@@ -2,6 +2,11 @@ name: E2E
 
 on:
   workflow_dispatch:
+    inputs:
+      previous_manager_image:
+        description: Previous release manager image (for example, harbor.feddema.dev/operatarr/operatarr:vX.Y.Z)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,6 +23,7 @@ jobs:
       CONTAINER_TOOL: docker
       KIND_CLUSTER: operatarr-e2e
       KUBECONFIG: ${{ github.workspace }}/.kube/operatarr-e2e
+      E2E_PREVIOUS_MANAGER_IMAGE: ${{ inputs.previous_manager_image }}
     steps:
       - uses: actions/checkout@v7
 

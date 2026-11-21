@@ -38,7 +38,36 @@ They temporarily install the CRD from the pinned Go module and restart the
 manager to verify Gateway API discovery, then remove the CRD during cleanup.
 
 With `kind`, `kubectl`, and a working Docker or Podman installation available,
-run `make kind-create`, `make test-e2e`, and `make kind-delete`. The cluster
+run `make kind-create`, `make test-e2e`, and `make kind-delete`. The upgrade
+spec is skipped unless `E2E_PREVIOUS_MANAGER_IMAGE` names an accessible
+previous release image. For example:
+
+```sh
+E2E_PREVIOUS_MANAGER_IMAGE=harbor.feddema.dev/operatarr/operatarr:vX.Y.Z make test-e2e
+```
+
+The suite loads that image into kind and verifies that a MediaLibrary created
+with it continues reconciling after the manager is upgraded to the local image.
+To use an image already built in the container engine instead of pulling it,
+also set `E2E_PREVIOUS_MANAGER_IMAGE_LOCAL=true`. The upgrade test temporarily
+grants the manager service account read and watch access to PersistentVolumes
+for older managers, and removes that grant afterward.
+Use `E2E_LABELS` to run a subset of the suite; labels include `operator`,
+`medialibrary`, `sonarr`, `upgrade`, `restart`, and `slow`. For example:
+
+```sh
+E2E_LABELS='sonarr && !slow' make test-e2e
+```
+
+The run prints `E2E_TIMING` records for image building/saving, image loading,
+overlay deployment, and the full suite including teardown. Ginkgo writes a JSON
+spec report to `$(LOCALBIN)/e2e-report.json` by default; override `E2E_REPORT`
+to choose another path.
+
+The manager, jobrunner, and Sonarr mock images use Go build-cache mounts and
+incremental compilation to avoid recompiling dependencies unnecessarily.
+The [manually triggered E2E workflow](.github/workflows/e2e.yaml) requires the
+previous release image as an input. The cluster
 uses the single-node configuration in [hack/kind-config.yaml](hack/kind-config.yaml).
 To keep its credentials separate, set `KUBECONFIG` to a separate file before
 running these commands. The Makefile defaults to Podman; use

@@ -1,0 +1,21 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: operatarr-e2e-previous-manager-pv-reader
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumes"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: operatarr-e2e-previous-manager-pv-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: operatarr-e2e-previous-manager-pv-reader
+subjects:
+- kind: ServiceAccount
+  name: operatarr-controller-manager
+  namespace: operatarr-system

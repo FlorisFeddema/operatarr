@@ -23,6 +23,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
 )
@@ -51,6 +53,7 @@ const (
 	failedLibraryName     = "failed-init-library"
 	resizeLibraryName     = "resize-library"
 	retainedLibraryName   = "retained-library"
+	restartLibraryName    = "restart-library"
 	kubectlAll            = "--all"
 	twoMinuteTimeoutFlag  = "--timeout=2m"
 	operatarrAPIVersion   = "feddema.dev/v1alpha1"
@@ -71,42 +74,8 @@ var (
 )
 
 func mediaLibrarySpecs() {
-	Context(mediaLibraryKind, func() {
-		BeforeAll(func() {
-			By("checking the single-node cluster and its local-path provisioner images")
-			provisionerImage, helperImage, err := localPathImages()
-			Expect(err).NotTo(HaveOccurred())
-			localPathHelperImage = helperImage
-
-			By("creating an isolated namespace and test-only RWX provisioner")
-			mediaNamespace, err = newMediaRunName()
-			Expect(err).NotTo(HaveOccurred())
-			_, err = testStorageRoot()
-			Expect(err).NotTo(HaveOccurred())
-
-			testNamespace := &corev1.Namespace{
-				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
-				ObjectMeta: metav1.ObjectMeta{Name: mediaNamespace, Labels: map[string]string{e2eRunLabel: mediaNamespace}},
-			}
-			Expect(createTestObject(testNamespace)).To(Succeed())
-			mediaNamespaceCreated = true
-
-			provisionerJSON, err := json.Marshal(provisionerImage)
-			Expect(err).NotTo(HaveOccurred())
-			helperJSON, err := json.Marshal(helperImage)
-			Expect(err).NotTo(HaveOccurred())
-			manifest := strings.NewReplacer(
-				"E2E_RUN_NAME", mediaNamespace,
-				"E2E_PROVISIONER_IMAGE", string(provisionerJSON),
-				"E2E_HELPER_IMAGE", string(helperJSON),
-			).Replace(localPathTemplate)
-			_, err = runKubectlWithInput([]byte(manifest), "create", "-f", "-")
-			Expect(err).NotTo(HaveOccurred())
-
-			_, err = utils.Run(utils.KindKubectl("wait", "--for=condition=Available", "--timeout=3m",
-				"deployment/"+mediaNamespace, namespaceFlag, mediaNamespace))
-			Expect(err).NotTo(HaveOccurred())
-		})
+	Context(mediaLibraryKind, Label("medialibrary"), func() {
+		BeforeAll(setupMediaLibraryHarness)
 
 		It("uses an existing ReadWriteMany PVC and leaves it after deletion", func() {
 			const libraryName = "existing-library"
@@ -164,7 +133,7 @@ func mediaLibrarySpecs() {
 			expectLibraryStatus(libraryName, metav1.ConditionTrue, "ExistingPVCFound", true, &pvcName)
 		})
 
-		It("initializes a managed ReadWriteMany PVC", func() {
+		It("initializes a managed ReadWriteMany PVC", Label("slow"), func() {
 			const libraryName = managedLibraryName
 			pvcName := libraryName
 
@@ -195,6 +164,78 @@ func mediaLibrarySpecs() {
 			By("checking two pods can write to the same claim concurrently")
 			checkConcurrentRWX(pvcName)
 		})
+
+		It("recovers from a manager restart during initialization without duplicate Jobs",
+			Label("restart"), Label("slow"), func() {
+				By("creating a MediaLibrary and suspending its initialization Job")
+				Expect(createTestObject(newManagedTestLibrary(restartLibraryName))).To(Succeed())
+
+				jobName := restartLibraryName + "-pvc-init"
+				var initialJob batchv1.Job
+				Eventually(func(g Gomega) {
+					g.Expect(getTestObject("job", jobName, &initialJob)).To(Succeed())
+					g.Expect(initialJob.UID).NotTo(BeEmpty())
+					g.Expect(jobConditionIsTrue(&initialJob, batchv1.JobComplete)).To(BeFalse())
+					_, err := utils.Run(utils.KindKubectl("patch", "job", jobName, "--type=merge",
+						"-p", `{"spec":{"suspend":true}}`, namespaceFlag, mediaNamespace))
+					g.Expect(err).NotTo(HaveOccurred())
+				}, 2*time.Minute, 100*time.Millisecond).Should(Succeed())
+
+				Eventually(func(g Gomega) {
+					var job batchv1.Job
+					g.Expect(getTestObject("job", jobName, &job)).To(Succeed())
+					g.Expect(job.UID).To(Equal(initialJob.UID))
+					g.Expect(job.Spec.Suspend).NotTo(BeNil())
+					g.Expect(*job.Spec.Suspend).To(BeTrue())
+					g.Expect(jobConditionIsTrue(&job, batchv1.JobSuspended)).To(BeTrue())
+					g.Expect(jobConditionIsTrue(&job, batchv1.JobComplete)).To(BeFalse())
+				}, time.Minute, time.Second).Should(Succeed())
+
+				By("restarting the manager while initialization is suspended")
+				oldPodName, err := controllerPodName()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = utils.Run(utils.KindKubectl(kubectlDelete, podResource, oldPodName,
+					"--wait=true", twoMinuteTimeoutFlag, namespaceFlag, namespace))
+				Expect(err).NotTo(HaveOccurred())
+				_, err = utils.Run(utils.KindKubectl("wait", "--for=condition=Available", "--timeout=3m",
+					"deployment/"+managerDeployment, namespaceFlag, namespace))
+				Expect(err).NotTo(HaveOccurred())
+				_, err = utils.Run(utils.KindKubectl("wait", "--for=condition=Ready", "--timeout=3m",
+					"pod", "-l", managerSelector, namespaceFlag, namespace))
+				Expect(err).NotTo(HaveOccurred())
+
+				newPodName, err := controllerPodName()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(newPodName).NotTo(Equal(oldPodName))
+				Eventually(func(g Gomega) {
+					holder, getErr := utils.Run(utils.KindKubectl(kubectlGet, "lease", leaderElectionName,
+						"-o", "jsonpath={.spec.holderIdentity}", namespaceFlag, namespace))
+					g.Expect(getErr).NotTo(HaveOccurred())
+					g.Expect(strings.TrimSpace(string(holder))).To(ContainSubstring(newPodName))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+
+				By("resuming initialization and checking that the existing Job completes")
+				var library feddemav1alpha1.MediaLibrary
+				Expect(getTestObject("medialibrary", restartLibraryName, &library)).To(Succeed())
+				jobs, err := mediaJobsOwnedBy(library.UID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(jobs).To(HaveLen(1))
+				Expect(jobs[0].UID).To(Equal(initialJob.UID))
+
+				_, err = utils.Run(utils.KindKubectl("patch", "job", jobName, "--type=merge",
+					"-p", `{"spec":{"suspend":false}}`, namespaceFlag, mediaNamespace))
+				Expect(err).NotTo(HaveOccurred())
+				_, err = utils.Run(utils.KindKubectl("wait", "--for=condition=Complete", twoMinuteTimeoutFlag,
+					"job/"+jobName, namespaceFlag, mediaNamespace))
+				Expect(err).NotTo(HaveOccurred())
+				pvcName := restartLibraryName
+				expectLibraryStatus(restartLibraryName, metav1.ConditionTrue, "PVCInitialized", true, &pvcName)
+
+				jobs, err = mediaJobsOwnedBy(library.UID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(jobs).To(HaveLen(1))
+				Expect(jobs[0].UID).To(Equal(initialJob.UID))
+			})
 
 		It("reports a failed initialization Job", func() {
 			const libraryName = failedLibraryName
@@ -350,7 +391,49 @@ func mediaLibrarySpecs() {
 				}, 10*time.Second, 2*time.Second).Should(Succeed())
 			}
 		})
+
+		upgradeSpecs()
 	})
+}
+
+func setupMediaLibraryHarness() {
+	if mediaNamespaceCreated {
+		return
+	}
+
+	By("checking the single-node cluster and its local-path provisioner images")
+	provisionerImage, helperImage, err := localPathImages()
+	Expect(err).NotTo(HaveOccurred())
+	localPathHelperImage = helperImage
+
+	By("creating an isolated namespace and test-only RWX provisioner")
+	mediaNamespace, err = newMediaRunName()
+	Expect(err).NotTo(HaveOccurred())
+	_, err = testStorageRoot()
+	Expect(err).NotTo(HaveOccurred())
+
+	testNamespace := &corev1.Namespace{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+		ObjectMeta: metav1.ObjectMeta{Name: mediaNamespace, Labels: map[string]string{e2eRunLabel: mediaNamespace}},
+	}
+	Expect(createTestObject(testNamespace)).To(Succeed())
+	mediaNamespaceCreated = true
+
+	provisionerJSON, err := json.Marshal(provisionerImage)
+	Expect(err).NotTo(HaveOccurred())
+	helperJSON, err := json.Marshal(helperImage)
+	Expect(err).NotTo(HaveOccurred())
+	manifest := strings.NewReplacer(
+		"E2E_RUN_NAME", mediaNamespace,
+		"E2E_PROVISIONER_IMAGE", string(provisionerJSON),
+		"E2E_HELPER_IMAGE", string(helperJSON),
+	).Replace(localPathTemplate)
+	_, err = runKubectlWithInput([]byte(manifest), "create", "-f", "-")
+	Expect(err).NotTo(HaveOccurred())
+
+	_, err = utils.Run(utils.KindKubectl("wait", "--for=condition=Available", "--timeout=3m",
+		"deployment/"+mediaNamespace, namespaceFlag, mediaNamespace))
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func localPathImages() (string, string, error) {
@@ -454,6 +537,26 @@ func mediaReconcileCount(name string) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+func mediaJobsOwnedBy(libraryUID types.UID) ([]batchv1.Job, error) {
+	output, err := utils.Run(utils.KindKubectl(kubectlGet, "jobs", "-o", "json", namespaceFlag, mediaNamespace))
+	if err != nil {
+		return nil, fmt.Errorf("unable to list MediaLibrary Jobs: %w", err)
+	}
+	var jobs batchv1.JobList
+	if err := json.Unmarshal(output, &jobs); err != nil {
+		return nil, fmt.Errorf("unable to decode MediaLibrary Jobs: %w", err)
+	}
+
+	var owned []batchv1.Job
+	for _, job := range jobs.Items {
+		owner := metav1.GetControllerOf(&job)
+		if owner != nil && owner.UID == libraryUID {
+			owned = append(owned, job)
+		}
+	}
+	return owned, nil
 }
 
 func newMediaRunName() (string, error) {
@@ -568,6 +671,15 @@ func expectMediaOwner(object *metav1.ObjectMeta, library *feddemav1alpha1.MediaL
 	Expect(owner.UID).To(Equal(library.UID))
 }
 
+func jobConditionIsTrue(job *batchv1.Job, conditionType batchv1.JobConditionType) bool {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == conditionType && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
 func checkMediaFolders(pvcName string) {
 	GinkgoHelper()
 	command := "test -d /library/movies && test -d /library/tv && test -d /library/music"
@@ -578,14 +690,18 @@ func checkConcurrentRWX(pvcName string) {
 	GinkgoHelper()
 	writerName := pvcName + "-writer"
 	readerName := pvcName + "-reader"
-	writer := newMediaVolumePod(pvcName, writerName, "printf 'writer\\n' > /library/.e2e-writer; sleep 120", false)
+	terminationGracePeriod := int64(1)
+	// These pods are idle after the cross-pod check; avoid the default 30-second shutdown grace.
+	writer := newMediaVolumePod(pvcName, writerName, "printf 'writer\\n' > /library/.e2e-writer; exec sleep 120", false)
+	writer.Spec.TerminationGracePeriodSeconds = &terminationGracePeriod
 	Expect(createTestObject(writer)).To(Succeed())
 	_, err := utils.Run(utils.KindKubectl("wait", "--for=condition=Ready", twoMinuteTimeoutFlag,
 		"pod/"+writerName, namespaceFlag, mediaNamespace))
 	Expect(err).NotTo(HaveOccurred())
 
 	reader := newMediaVolumePod(pvcName, readerName,
-		"grep -qx writer /library/.e2e-writer; printf 'reader\\n' > /library/.e2e-reader; sleep 120", false)
+		"grep -qx writer /library/.e2e-writer; printf 'reader\\n' > /library/.e2e-reader; exec sleep 120", false)
+	reader.Spec.TerminationGracePeriodSeconds = &terminationGracePeriod
 	Expect(createTestObject(reader)).To(Succeed())
 	_, err = utils.Run(utils.KindKubectl("wait", "--for=condition=Ready", twoMinuteTimeoutFlag,
 		"pod/"+readerName, namespaceFlag, mediaNamespace))
@@ -659,13 +775,24 @@ func waitForTestPod(name string) error {
 }
 
 func cleanupMediaResources() error {
-	if _, err := utils.Run(utils.KindKubectl(kubectlDelete, podResource, "-l", e2eDebugLabel+"=true",
-		ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace)); err != nil {
+	if err := timeE2EOperation("cleanup-debug-pods-before-volumes", func() error {
+		_, err := utils.Run(utils.KindKubectl(kubectlDelete, podResource, "-l", e2eDebugLabel+"=true",
+			ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace))
+		return err
+	}); err != nil {
 		return fmt.Errorf("unable to remove MediaLibrary test pods: %w", err)
 	}
 	var protectedPods []string
-	for _, name := range []string{managedLibraryName, failedLibraryName, resizeLibraryName, retainedLibraryName} {
-		podName, err := protectTestVolume(name)
+	for _, name := range []string{
+		managedLibraryName, failedLibraryName, resizeLibraryName, retainedLibraryName,
+		restartLibraryName, upgradeLibraryName,
+	} {
+		var podName string
+		err := timeE2EOperation("cleanup-protect-volume-"+name, func() error {
+			var err error
+			podName, err = protectTestVolume(name)
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -674,49 +801,83 @@ func cleanupMediaResources() error {
 		}
 	}
 
-	commands := [][]string{
-		{kubectlDelete, "sonarrs", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
-			namespaceFlag, mediaNamespace},
-		{kubectlDelete, "medialibraries", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
-			namespaceFlag, mediaNamespace},
-		{kubectlDelete, "jobs", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace},
-		{kubectlDelete, podResource, "-l", "batch.kubernetes.io/job-name", ignoreNotFoundFlag, twoMinuteTimeoutFlag,
-			namespaceFlag, mediaNamespace},
+	commands := []struct {
+		stage string
+		args  []string
+	}{
+		{
+			stage: "cleanup-delete-sonarrs",
+			args: []string{kubectlDelete, "sonarrs", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
+				namespaceFlag, mediaNamespace},
+		},
+		{
+			stage: "cleanup-delete-medialibraries",
+			args: []string{kubectlDelete, "medialibraries", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
+				namespaceFlag, mediaNamespace},
+		},
+		{
+			stage: "cleanup-delete-jobs",
+			args: []string{kubectlDelete, "jobs", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
+				namespaceFlag, mediaNamespace},
+		},
+		{
+			stage: "cleanup-delete-job-pods",
+			args: []string{kubectlDelete, podResource, "-l", "batch.kubernetes.io/job-name", ignoreNotFoundFlag,
+				twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace},
+		},
 	}
-	for _, args := range commands {
-		if _, err := utils.Run(utils.KindKubectl(args...)); err != nil {
-			return fmt.Errorf("unable to clean up MediaLibrary test resources: %w", err)
+	for _, command := range commands {
+		if err := timeE2EOperation(command.stage, func() error {
+			_, err := utils.Run(utils.KindKubectl(command.args...))
+			return err
+		}); err != nil {
+			return fmt.Errorf("unable to run %s: %w", command.stage, err)
 		}
 	}
 	for _, podName := range protectedPods {
-		if err := cleanTestVolume(podName); err != nil {
+		if err := timeE2EOperation("cleanup-volume-files-"+podName, func() error {
+			return cleanTestVolume(podName)
+		}); err != nil {
 			return err
 		}
 	}
-	for _, args := range [][]string{
-		{kubectlDelete, podResource, "-l", e2eDebugLabel + "=true", ignoreNotFoundFlag, twoMinuteTimeoutFlag,
-			namespaceFlag, mediaNamespace},
-		{kubectlDelete, "pvc", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace},
+	for _, command := range []struct {
+		stage string
+		args  []string
+	}{
+		{
+			stage: "cleanup-delete-debug-pods",
+			args: []string{kubectlDelete, podResource, "-l", e2eDebugLabel + "=true",
+				ignoreNotFoundFlag, twoMinuteTimeoutFlag, namespaceFlag, mediaNamespace},
+		},
+		{
+			stage: "cleanup-delete-pvcs",
+			args: []string{kubectlDelete, "pvc", kubectlAll, ignoreNotFoundFlag, twoMinuteTimeoutFlag,
+				namespaceFlag, mediaNamespace},
+		},
 	} {
-		if _, err := utils.Run(utils.KindKubectl(args...)); err != nil {
-			return fmt.Errorf("unable to clean up MediaLibrary test volumes: %w", err)
+		if err := timeE2EOperation(command.stage, func() error {
+			_, err := utils.Run(utils.KindKubectl(command.args...))
+			return err
+		}); err != nil {
+			return fmt.Errorf("unable to run %s: %w", command.stage, err)
 		}
 	}
-	if err := waitForTestVolumesDeleted(); err != nil {
+	if err := timeE2EOperation("cleanup-wait-persistent-volumes", waitForTestVolumesDeleted); err != nil {
 		return err
 	}
-	if err := removeTestStorageRoot(); err != nil {
+	if err := timeE2EOperation("cleanup-storage-root", removeTestStorageRoot); err != nil {
 		return err
 	}
 
-	_, err := utils.Run(utils.KindKubectl(kubectlDelete, "clusterrole,clusterrolebinding,storageclass",
-		"-l", e2eRunLabel+"="+mediaNamespace, ignoreNotFoundFlag, twoMinuteTimeoutFlag))
-	if err != nil {
+	if err := timeE2EOperation("cleanup-storage-cluster-resources", func() error {
+		_, err := utils.Run(utils.KindKubectl(kubectlDelete, "clusterrole,clusterrolebinding,storageclass",
+			"-l", e2eRunLabel+"="+mediaNamespace, ignoreNotFoundFlag, twoMinuteTimeoutFlag))
+		return err
+	}); err != nil {
 		return fmt.Errorf("unable to remove test storage cluster resources: %w", err)
 	}
-	_, err = utils.Run(utils.KindKubectl(kubectlDelete, "namespace", mediaNamespace,
-		ignoreNotFoundFlag, twoMinuteTimeoutFlag))
-	if err != nil {
+	if err := timeE2EOperation("cleanup-media-namespace", deleteTestMediaNamespace); err != nil {
 		return fmt.Errorf("unable to remove MediaLibrary test namespace: %w", err)
 	}
 	return nil
@@ -741,8 +902,9 @@ func protectTestVolume(name string) (string, error) {
 	if pvc.Status.Phase != corev1.ClaimBound {
 		return "", nil
 	}
-	pod := newMediaVolumePod(name, name+"-cleanup", "sleep 600", false)
+	pod := newMediaVolumePod(name, name+"-cleanup", "exec sleep 600", false)
 	pod.Spec.ActiveDeadlineSeconds = new(int64(600))
+	pod.Spec.TerminationGracePeriodSeconds = new(int64(1))
 	if err := createTestObject(pod); err != nil {
 		return "", fmt.Errorf("unable to protect test PVC %s during cleanup: %w", name, err)
 	}
@@ -803,26 +965,147 @@ func removeTestStorageRoot() error {
 
 func waitForTestVolumesDeleted() error {
 	var remaining []string
+	waitStartedAt := time.Now()
+	pollCount := 0
 	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 2*time.Minute, true,
 		func(context.Context) (bool, error) {
+			pollCount++
+			pollStartedAt := time.Now()
+			remaining = nil
+			pollError := false
+			defer func() {
+				fmt.Fprintf(GinkgoWriter,
+					"E2E_CLEANUP_PV_POLL attempt=%d poll_ms=%d elapsed_ms=%d remaining=%q error=%t\n",
+					pollCount, time.Since(pollStartedAt).Milliseconds(),
+					time.Since(waitStartedAt).Milliseconds(), strings.Join(remaining, ","), pollError)
+			}()
+
 			output, err := utils.Run(utils.KindKubectl(kubectlGet, "persistentvolumes", "-o", "json"))
 			if err != nil {
+				pollError = true
 				return false, err
 			}
 			var volumes corev1.PersistentVolumeList
 			if err := json.Unmarshal(output, &volumes); err != nil {
+				pollError = true
 				return false, fmt.Errorf("unable to decode PersistentVolumes: %w", err)
 			}
-			remaining = nil
 			for _, volume := range volumes.Items {
 				if volume.Spec.StorageClassName == mediaNamespace {
-					remaining = append(remaining, volume.Name)
+					details := fmt.Sprintf("%s(phase=%s", volume.Name, volume.Status.Phase)
+					if volume.DeletionTimestamp != nil {
+						details += ",deleting=true"
+					}
+					if len(volume.Finalizers) > 0 {
+						details += ",finalizers=" + strings.Join(volume.Finalizers, ",")
+					}
+					if volume.Spec.ClaimRef != nil {
+						details += ",claim=" + volume.Spec.ClaimRef.Namespace + "/" + volume.Spec.ClaimRef.Name
+					}
+					remaining = append(remaining, details+")")
 				}
 			}
 			return len(remaining) == 0, nil
 		})
 	if err != nil {
 		return fmt.Errorf("unable to remove test PersistentVolumes %v: %w", remaining, err)
+	}
+	return nil
+}
+
+func deleteTestMediaNamespace() error {
+	if err := timeE2EOperation("cleanup-media-namespace-delete-request", func() error {
+		_, err := utils.Run(utils.KindKubectl(kubectlDelete, "namespace", mediaNamespace,
+			ignoreNotFoundFlag, "--wait=false"))
+		return err
+	}); err != nil {
+		return fmt.Errorf("unable to request MediaLibrary test namespace deletion: %w", err)
+	}
+
+	waitStartedAt := time.Now()
+	pollCount := 0
+	var remaining []string
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 2*time.Minute, true,
+		func(context.Context) (bool, error) {
+			pollCount++
+			pollStartedAt := time.Now()
+			remaining = nil
+			namespaceConditions := ""
+			namespacePhase := ""
+			pollError := false
+			defer func() {
+				fmt.Fprintf(GinkgoWriter,
+					"E2E_CLEANUP_NAMESPACE_POLL attempt=%d poll_ms=%d elapsed_ms=%d phase=%q conditions=%q remaining=%q error=%t\n",
+					pollCount, time.Since(pollStartedAt).Milliseconds(),
+					time.Since(waitStartedAt).Milliseconds(), namespacePhase,
+					namespaceConditions, strings.Join(remaining, ","), pollError)
+			}()
+
+			namespaceJSON, err := utils.Run(utils.KindKubectl(kubectlGet, "namespace", mediaNamespace,
+				ignoreNotFoundFlag, "-o", "json"))
+			if err != nil {
+				pollError = true
+				return false, err
+			}
+			if len(bytes.TrimSpace(namespaceJSON)) == 0 {
+				return true, nil
+			}
+
+			var namespace corev1.Namespace
+			if err := json.Unmarshal(namespaceJSON, &namespace); err != nil {
+				pollError = true
+				return false, fmt.Errorf("unable to decode MediaLibrary test namespace: %w", err)
+			}
+			namespacePhase = string(namespace.Status.Phase)
+			conditions := make([]string, 0, len(namespace.Status.Conditions))
+			for _, condition := range namespace.Status.Conditions {
+				conditions = append(conditions, fmt.Sprintf("%s=%s:%s:%s",
+					condition.Type, condition.Status, condition.Reason, condition.Message))
+			}
+			namespaceConditions = strings.Join(conditions, ";")
+
+			resourcesJSON, err := utils.Run(utils.KindKubectl(kubectlGet,
+				"all,configmaps,serviceaccounts,roles,rolebindings,secrets,persistentvolumeclaims",
+				namespaceFlag, mediaNamespace, "-o", "json"))
+			if err != nil {
+				namespaceJSON, namespaceErr := utils.Run(utils.KindKubectl(kubectlGet, "namespace", mediaNamespace,
+					ignoreNotFoundFlag, "-o", "json"))
+				if namespaceErr == nil && len(bytes.TrimSpace(namespaceJSON)) == 0 {
+					return true, nil
+				}
+				pollError = true
+				if namespaceErr != nil {
+					return false, errors.Join(
+						fmt.Errorf("unable to list remaining test resources: %w", err),
+						fmt.Errorf("unable to recheck namespace after list failure: %w", namespaceErr))
+				}
+				return false, err
+			}
+			var resources struct {
+				Items []struct {
+					Kind     string `json:"kind"`
+					Metadata metav1.ObjectMeta
+				} `json:"items"`
+			}
+			if err := json.Unmarshal(resourcesJSON, &resources); err != nil {
+				pollError = true
+				return false, fmt.Errorf("unable to decode remaining MediaLibrary test resources: %w", err)
+			}
+			for _, resource := range resources.Items {
+				name := resource.Kind + "/" + resource.Metadata.Name
+				if resource.Metadata.DeletionTimestamp != nil {
+					name += "(deleting)"
+				}
+				if len(resource.Metadata.Finalizers) > 0 {
+					name += "(finalizers=" + strings.Join(resource.Metadata.Finalizers, ",") + ")"
+				}
+				remaining = append(remaining, name)
+			}
+			return false, nil
+		})
+	if err != nil {
+		return fmt.Errorf("unable to wait for MediaLibrary test namespace deletion; remaining resources %v: %w",
+			remaining, err)
 	}
 	return nil
 }

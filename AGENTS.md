@@ -30,8 +30,11 @@ Sonarr and MediaLibrary resources; do not assume the other apps already exist.
   finalizer cleanup, or deletion policy.
 - Ask before any cluster mutation, including creating a local test cluster,
   installing CRDs, deploying/uninstalling the operator, applying/deleting
-  resources, or running cluster-mutating e2e tests. Also ask before pushing images.
-  Do not assume the current kubeconfig points to a disposable cluster.
+  resources, or running cluster-mutating e2e tests, except for E2E tests on the
+  existing local kind cluster `operatarr-e2e`. Those tests may apply and remove
+  their own test resources, CRDs, and operator overlay there without additional
+  approval. Still ask before creating or deleting that cluster, mutating any
+  other cluster, or pushing images.
 
 ## Reconciliation architecture
 
@@ -128,12 +131,14 @@ Sonarr and MediaLibrary resources; do not assume the other apps already exist.
   `LOCALBIN` override for tool downloads; do not assume bundled binaries match
   the current OS/architecture.
 - E2E requires a configured cluster and working container engine; follow the
-  [README](README.md) and obtain approval before running it. Do not substitute a
-  live cluster for missing envtest assets.
+  [README](README.md). The existing local kind cluster `operatarr-e2e` is
+  designated for E2E runs and may be used without per-run approval. Do not
+  create or delete it or substitute another cluster without explicit approval.
 - When a change affects cluster-level behavior such as resources, RBAC, watches,
   storage, or lifecycle, consider whether an e2e flow should be added or updated
-  and suggest one when useful. Do not run cluster-mutating e2e tests without
-  explicit approval.
+  and suggest one when useful. Cluster-mutating e2e tests may run on
+  `operatarr-e2e` without additional approval; ask before using a different
+  cluster.
 - Documentation-only, non-feature changes do not require Go tests. Report what
   was validated and any blocked checks accurately; never claim an unrun check
   passed.

@@ -38,6 +38,10 @@ CONTAINER_TOOL ?= podman
 KIND_CLUSTER ?= operatarr-e2e
 E2E_PLATFORM ?= linux/$(shell go env GOARCH)
 E2E_IMAGE_DIR ?= $(LOCALBIN)/e2e-images
+E2E_REPORT ?= $(LOCALBIN)/e2e-report.json
+E2E_LABELS ?=
+E2E_PREVIOUS_MANAGER_IMAGE_LOCAL ?= false
+export E2E_PREVIOUS_MANAGER_IMAGE E2E_PREVIOUS_MANAGER_IMAGE_LOCAL
 
 ifeq ($(CONTAINER_TOOL),podman)
 E2E_IMAGE_SAVE_FLAGS ?= --format docker-archive
@@ -95,7 +99,8 @@ test: manifests generate fmt vet envtest ## Run tests.
 # The e2e suite requires an existing kind cluster named by KIND_CLUSTER.
 .PHONY: test-e2e
 test-e2e:
-	KIND_CLUSTER="$(KIND_CLUSTER)" go test ./test/e2e/ -v -ginkgo.v -timeout=20m
+	mkdir -p "$(dir $(E2E_REPORT))"
+	KIND_CLUSTER="$(KIND_CLUSTER)" CONTAINER_TOOL="$(CONTAINER_TOOL)" go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="$(E2E_LABELS)" -ginkgo.json-report="$(E2E_REPORT)" -timeout=20m
 
 .PHONY: kind-create
 kind-create:
@@ -123,6 +128,14 @@ e2e-images: docker-build-e2e docker-build-jobrunner-e2e docker-build-sonarr-mock
 	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/manager.tar" "example.com/operatarr:e2e"
 	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/jobrunner.tar" "example.com/operatarr-jobrunner:e2e"
 	$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/sonarr.tar" "example.com/sonarr:e2e"
+	if [[ -n "$$E2E_PREVIOUS_MANAGER_IMAGE" ]]; then \
+		case "$$E2E_PREVIOUS_MANAGER_IMAGE_LOCAL" in \
+			true) ;; \
+			false) $(CONTAINER_TOOL) pull --platform "$(E2E_PLATFORM)" "$$E2E_PREVIOUS_MANAGER_IMAGE" ;; \
+			*) echo "E2E_PREVIOUS_MANAGER_IMAGE_LOCAL must be true or false" >&2; exit 1 ;; \
+		esac; \
+		$(CONTAINER_TOOL) save $(E2E_IMAGE_SAVE_FLAGS) -o "$(E2E_IMAGE_DIR)/previous-manager.tar" "$$E2E_PREVIOUS_MANAGER_IMAGE"; \
+	fi
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

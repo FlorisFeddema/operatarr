@@ -1,9 +1,9 @@
 # E2E test plan
 
 This document records the work to make the cluster end-to-end (e2e) suite in
-[test/e2e](../test/e2e/) reliable and the flows to add afterwards. The full
-23-spec suite, including Sonarr storage flows B21–B23, passed on a local
-Linux/arm64 kind cluster. Items marked **approval** fall under the approval
+[test/e2e](../test/e2e/) reliable and faster, and the flows to add afterwards. The latest
+recorded 25-spec run, including manager restart and upgrade flows B24 and B25,
+passed on a local Linux/arm64 kind cluster. Items marked **approval** fall under the approval
 boundaries in [AGENTS.md](../AGENTS.md) and need explicit sign-off before
 implementation.
 
@@ -16,8 +16,9 @@ Operator flows and the MediaLibrary flows in
 1. Setup verifies the current context is `kind-$(KIND_CLUSTER)`, builds and
    loads single-platform manager and jobrunner images, and applies the
    `test/e2e/overlay` Kustomize package.
-2. B1 waits for the manager Deployment and pod to be healthy, checks that the
-   manager does not restart for two minutes, and scans logs for RBAC errors.
+2. B1 waits for the manager Deployment and pod to be healthy, verifies that
+   both controllers start workers after cache synchronization, checks that the
+   manager does not restart for ten seconds, and scans logs for RBAC errors.
 3. B2 checks HTTPS `/metrics` access from an in-cluster curl pod using a
    ServiceAccount bound to the `metrics-reader` ClusterRole. The pod runs
    detached; the suite waits for it to succeed, reads its logs, and deletes it.
@@ -35,8 +36,15 @@ about 5 minutes 52 seconds, and teardown removed the CRDs, operator, and test
 storage. An earlier B8 run with NFS failed because the rootless node rejected
 the NFS mount; the local-path backend replaced it.
 
-The latest full run passed all 23 specs, including Sonarr storage flows B21–B23,
-in about 6 minutes 17 seconds.
+The latest recorded full run passed all 25 specs on Kubernetes v1.37.0 in
+318.922 seconds on Linux/arm64 kind with Podman 5.7.0. B24 suspends a
+MediaLibrary initialization Job, restarts the manager, and verifies that the
+same Job completes without duplicates. B25 creates a MediaLibrary with the
+manager built from revision `cc648ee`, then upgrades to the current image and
+verifies that the existing resource continues reconciling. This tests a
+previous source revision, not a published release; compatibility with a
+released image remains unverified. The earlier full run took about 7 minutes
+5 seconds.
 
 Sonarr flows B14–B20 are implemented in
 [sonarr_test.go](../test/e2e/sonarr_test.go). They passed as part of the full
@@ -182,12 +190,12 @@ unavailable; a route disabled from creation is not created.
 | B22 `crossNamespaceAccess: false` | Same-namespace PVC mounts directly; no PV is created | 2, implemented and passed |
 | B23 MediaLibrary in another namespace | Sonarr reports `CrossNamespaceMediaLibraryUnsupported` and creates no dependent resources | 2, implemented and passed |
 
-### Robustness (later)
+### Robustness
 
 | Flow | Assertions | Priority |
 |------|------------|----------|
-| B24 Manager restart during reconciliation | State converges with no duplicate Jobs | 2 |
-| B25 Upgrade from the previous release | Existing resources keep working after upgrading the manager image | 2 |
+| B24 Manager restart during reconciliation | State converges with no duplicate Jobs | 2, implemented and passed |
+| B25 Upgrade from the previous release | Existing resources keep working after upgrading the manager image | 2, passed with previous source revision; release image not yet tested |
 
 ## Suggested order
 
@@ -206,6 +214,10 @@ unavailable; a route disabled from creation is not created.
    [e2e.yaml](../.github/workflows/e2e.yaml) workflow; not yet run in CI.
 6. Sonarr storage flows B21–B23. **Implemented and passed on Linux/arm64 kind.**
    Cross-namespace data sharing remains deferred until an RWX backend is chosen.
+7. Manager restart during MediaLibrary initialization (B24). **Implemented and
+   passed on Linux/arm64 kind.**
+8. Manager upgrade from the previous release (B25). **Passed with a locally
+   built previous source revision; a published release image remains to be tested.**
 
 ## Decisions recorded
 
@@ -228,3 +240,101 @@ unavailable; a route disabled from creation is not created.
   working container engine and kind setup are also still prerequisites.
 - **CI trigger:** manual (`workflow_dispatch`) only; do not run e2e on every PR
   or automatically by path.
+
+## Part C: make local E2E faster
+
+The pre-optimization comparison run took about 7 minutes 5 seconds for all 25
+specs on Linux/arm64 kind. On 2026-11-21, the latest updated-suite run passed
+all 25 specs in 318.922 seconds with B25 enabled using the local `cc648ee`
+manager image. This is about 1 minute 46 seconds (25%) lower than the
+historical run. The prior updated-suite run took 313.195 seconds; treat the
+difference as normal run variation, not a regression. These results are
+indicative, not a controlled benchmark; machine and image-cache state affect
+timing. A run without the previous image completed 24 of 25 specs in 292.290
+seconds, with B25 skipped.
+
+### Phase 1: reduce repeated work
+
+1. **Reuse Go build caches. Implemented.** The three E2E Dockerfiles now use
+   BuildKit cache mounts for Go compilation (and module downloads where
+   applicable), remove `go build -a`, and use `-trimpath`. Dockerfile source
+   inputs are already copied selectively, so broadening `.dockerignore` is not
+   part of this change.
+2. **Replace the fixed cache-sync delay. Implemented.** B1 waits for both
+   controller-runtime workers to start, then checks pod restarts for ten
+   seconds and scans manager logs. The full suite also scans logs after all
+   specs, catching RBAC errors introduced by later reconciliations. Reaching
+   Ready conditions in the resource flows exercises the relevant write paths.
+3. **Run labeled subsets. Implemented.** `E2E_LABELS` passes a Ginkgo
+   label-filter; available labels are `operator`, `medialibrary`, `sonarr`,
+   `upgrade`, `restart`, and `slow`. MediaLibrary test storage setup is shared
+   with Sonarr so those subsets remain runnable independently.
+4. **Make the upgrade image optional. Implemented.** Without
+   `E2E_PREVIOUS_MANAGER_IMAGE`, B25 is skipped and image preparation avoids
+   pulling, saving, or loading a previous-release image. CI continues to
+   require its configured release image.
+
+### Phase 2: improve repeat local runs
+
+5. **Add timing/report output. Implemented.** E2E output includes durations for
+   image build/save, image load, overlay deployment, and the full suite through
+   teardown. Ginkgo writes per-spec JSON to `$(LOCALBIN)/e2e-report.json` by
+   default; `E2E_REPORT` can override the path. Use the report to identify
+   remaining hotspots before changing the harness further. The latest run
+   measured image build/save at 15.744 seconds, kind image load at 1.920
+   seconds, overlay apply at 0.279 seconds, and the suite including teardown at
+   318.921 seconds. The first and last Ginkgo spec timings include shared
+   `BeforeAll` and `AfterAll` work: B1's 39.39 seconds includes image setup and
+   deployment, while B20's 67.96 seconds includes suite cleanup. B8's isolated
+   spec duration was 43.11 seconds; B25 took 34.69 seconds.
+   Teardown now reports cleanup timing for manager-log checks, individual
+   MediaLibrary resource and storage-removal steps, metrics access, the
+   operator overlay, and the optional Gateway API CRD. PV cleanup logs each
+   poll's remaining volume names, phases, finalizers, and claims; namespace
+   cleanup logs its phase, deletion conditions, and remaining namespaced
+   resources while waiting up to two minutes for deletion to finish.
+   The first measured full run passed 24 specs and skipped B25 in 251.559
+   seconds. MediaLibrary cleanup took 57.734 seconds; deleting its idle
+   volume-protection pods took 30.635 seconds, while waiting for Persistent
+   Volumes and deleting the test namespace took 10.035 and 10.446 seconds.
+   The protection pods now use `exec sleep` and a one-second termination grace
+   to avoid the default 30-second pod shutdown wait. A focused MediaLibrary
+   run passed 10 specs (15 skipped); the same pod-deletion step took 3.041
+   seconds, about 27.6 seconds less. Since the runs selected different specs,
+   compare this cleanup step rather than their total durations. PV deletion
+   and namespace deletion remain about 10 seconds each.
+   Detailed polling showed PV counts of 8, 8, 5, 4, 2, then 0 over 10.056
+   seconds; remaining volumes were `Released` with the PV-protection
+   finalizer. Namespace deletion took 11.086 seconds. At about 5.1 seconds,
+   namespace conditions already reported content removed and no finalizers,
+   while the provisioner pod, Deployment/ReplicaSet, and support objects were
+   still disappearing. The configured poll intervals account for at most
+   about two seconds of PV wait and one second of namespace wait, so the
+   remaining delay appears to be provisioner/control-plane cleanup; no storage
+   policy or deletion wait was relaxed.
+6. **Reduce slow waits in E2E helpers. B8 updated and focused E2E passed.**
+   Its concurrent RWX check keeps writer containers alive with `exec sleep` so
+   Kubernetes can signal the sleeping process directly during normal pod
+   deletion, with a one-second termination grace after file assertions
+   complete. This preserves the cross-pod read/write assertions. A focused B8
+   run passed in 88.795 seconds, compared with 116.830 seconds before the
+   shorter grace; both totals include shared setup and teardown. The RWX-check
+   step itself fell from about 32 seconds to about 5 seconds in the run logs.
+7. Add an opt-in reuse mode that retains the operator, CRDs, and test storage
+   across runs. Keep cleanup explicit with a separate full-teardown target;
+   verify it cannot leave test resources behind.
+8. Move API-only assertions to envtest where they exercise the same behavior.
+   Keep cluster E2E for pods, Jobs, storage, garbage collection, RBAC, and
+   manager restarts.
+
+### Phase 3: parallelize independent flows
+
+9. Split independent flows into separate Ginkgo groups/namespaces and enable
+   parallel execution. Keep tests that restart or upgrade the shared manager
+   serial, and measure contention before making parallelism the default.
+
+### Phase 4: CI image caching
+
+10. Add container build-cache configuration to the manual E2E workflow and
+   avoid pulling an unchanged previous-release image when a reliable cache key
+   is available. Preserve the manual-only trigger decision.
