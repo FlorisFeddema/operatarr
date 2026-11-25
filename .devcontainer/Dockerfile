@@ -2,7 +2,7 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:e15941f70f26542ef9b0ef4b
 
 ARG TARGETARCH
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-ARG KUBECTL_VERSION=v1.37.2
+ARG KUBECTL_VERSION=v1.37.3
 # renovate: datasource=github-releases depName=kubernetes-sigs/kind
 ARG KIND_VERSION=v0.33.0
 
